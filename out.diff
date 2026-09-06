@@ -1,0 +1,325 @@
+diff --git a/.gitignore b/.gitignore
+new file mode 100644
+index 0000000..697cf4f
+--- /dev/null
++++ b/.gitignore
+@@ -0,0 +1 @@
++obj_dir/
+diff --git a/Makefile b/Makefile
+new file mode 100644
+index 0000000..b56365d
+--- /dev/null
++++ b/Makefile
+@@ -0,0 +1,6 @@
++simulate:
++	verilator --binary ./tb/top.sv -o out -f sources.f -Wno-WIDTHTRUNC -Wno-WIDTHEXPAND
++	./obj_dir/out
++
++clean:
++	rm -rf obj_dir/
+diff --git a/rtl/control_unit.sv b/rtl/control_unit.sv
+new file mode 100644
+index 0000000..c7aa0d5
+--- /dev/null
++++ b/rtl/control_unit.sv
+@@ -0,0 +1,28 @@
++module cu(input logic iclk);
++  bit [31:0] fetched_instr;
++  instr decoded_instr;
++
++  function void throw_error();
++    $error("ERROR THROWN");
++  endfunction
++
++  function void fetch();
++    fetched_instr = mem::mem(regs::pc); 
++  endfunction
++
++  function void decode();
++    decoded_instr = instr::create(fetched_instr);
++  endfunction
++
++  function void execute();
++    if (!decoded_instr.execute()) begin
++      throw_error();
++    end
++  endfunction
++
++  always @(posedge iclk) begin
++    fetch();
++    decode();
++    execute();
++  end
++endmodule
+diff --git a/rtl/instr.sv b/rtl/instr.sv
+new file mode 100644
+index 0000000..6328d24
+--- /dev/null
++++ b/rtl/instr.sv
+@@ -0,0 +1,180 @@
++class instr;
++  bit [6:0] opcode;
++
++  virtual function bit is_R_type(); return 1'b0; endfunction
++  virtual function bit is_I_type(); return 1'b0; endfunction
++  virtual function bit is_S_type(); return 1'b0; endfunction
++  virtual function bit is_U_type(); return 1'b0; endfunction
++
++  virtual function instr get_instr(bit [31:0] encoded); return null; endfunction
++
++  virtual function bit execute(); return 1'b0; endfunction
++
++  static function instr create(bit [31:0] encoded);
++    bit [6:0] opcode = encoded[6:0];
++    bit [2:0] funct3 = encoded[14:12];
++    bit [6:0] funct7 = encoded[31:25];
++    instr obj;
++
++    case (opcode)
++      // ---------- R-type ----------
++      7'b0110011,   // OP
++      7'b0111011:   // OP-32
++        obj = R_instr::new(encoded);
++
++      // ---------- I-type ----------
++      7'b0010011,   // OP-IMM
++      7'b0000011,   // LOAD
++      7'b1100111,   // JALR
++      7'b0011011,   // OP-IMM-32
++      7'b1110011:   // SYSTEM
++        obj = I_instr::new(encoded);
++
++      // ---------- S-type ----------
++      7'b0100011:   // STORE
++        obj = S_instr::new(encoded);
++
++      // ---------- U-type ----------
++      7'b0110111,   // LUI
++      7'b0010111:   // AUIPC
++        obj = U_instr::new(encoded);
++      default:
++        obj = null;
++    endcase
++
++    obj.opcode = opcode;   // store the opcode in the object
++    obj = obj.get_instr(encoded);
++    return  obj;
++  endfunction
++endclass
++
++class R_instr extends instr;
++  bit [6:0] funct7;
++  regs::reg_t rs2;
++  regs::reg_t rs1;
++  bit [2:0] funct3;
++  regs::reg_t rd;
++
++  function new(bit [31:0] encoded);
++    funct7 = encoded[31:25];
++    rs2 = regs::reg_t'(encoded[24:20]);
++    rs1 = regs::reg_t'(encoded[19:15]);
++    funct3 = encoded[14:12];
++    rd = regs::reg_t'(encoded[11:7]);
++    opcode = encoded[6:0];
++  endfunction
++
++  function instr get_instr(bit [31:0] encoded);
++    return null;
++  endfunction
++endclass
++
++class I_instr extends instr;
++  bit [11:0] imm;
++  regs::reg_t rs1;
++  bit [2:0] funct3;
++  regs::reg_t rd;
++
++  function new(bit [31:0] encoded);
++    imm = encoded[31:20];
++    rs1 = regs::reg_t'(encoded[19:15]);
++    funct3 = encoded[14:12];
++    rd = regs::reg_t'(encoded[11:7]);
++    opcode = encoded[6:0];
++  endfunction
++
++  function instr get_instr(bit [31:0] encoded);
++    return null;
++  endfunction
++endclass
++
++class S_instr extends instr;
++  bit [11:0] imm;
++  regs::reg_t rs2;
++  regs::reg_t rs1;
++  bit [2:0] funct3;
++  regs::reg_t rd;
++
++  function new(bit [31:0] encoded);
++    imm[11:5] = encoded[31:25];
++    rs2 = regs::reg_t'(encoded[24:20]);
++    rs1 = regs::reg_t'(encoded[19:15]);
++    funct3 = encoded[14:12];
++    imm[4:0] = encoded[11:7];
++    opcode = encoded[6:0];
++  endfunction
++
++  function instr get_instr(bit [31:0] encoded);
++    return null;
++  endfunction
++endclass
++
++typedef class LUI_instr;
++typedef class AUIPC_instr;
++
++class U_instr extends instr;
++  bit [19:0] imm;
++  regs::reg_t rd;
++
++  function new(bit [31:0] encoded);
++    imm = encoded[31:12];
++    rd = regs::reg_t'(encoded[11:7]);
++    opcode = encoded[6:0];
++  endfunction
++
++  function instr get_instr(bit [31:0] encoded);
++    if (opcode == OPCODE_LUI) begin
++      LUI_instr obj = new(encoded);
++      return obj;
++    end
++    if (opcode == OPCODE_AUIPC) begin
++      AUIPC_instr obj = new(encoded);
++      return obj;
++    end
++    return null;
++  endfunction
++endclass
++
++class LUI_instr extends U_instr;
++  function new(bit [31:0] encoded);
++    super.new(encoded);
++  endfunction
++
++  function bit execute();
++    regs::reg_page[rd] = imm << 12;
++    return 1'b1;
++  endfunction
++endclass
++
++class AUIPC_instr extends U_instr;
++  function new(bit [31:0] encoded);
++    super.new(encoded);
++  endfunction
++
++  function bit execute();
++    regs::reg_page[rd] = imm << 12 + regs::pc;
++    return 1'b1;
++  endfunction
++endclass
++
++class ADDI_instr extends I_instr;
++  function new(bit [31:0] encoded);
++    super.new(encoded);
++  endfunction
++
++  function bit execute();
++    regs::reg_page[rd] = regs::reg_page[rs1] + imm;
++    return 1'b1;
++  endfunction
++endclass
++
++class SLTI_instr extends I_instr;
++  function new(bit [31:0] encoded);
++    super.new(encoded);
++  endfunction
++
++  function bit execute();
++    regs::reg_page[rd] = regs::reg_page[rs1] + imm;
++    return 1'b1;
++  endfunction
++endclass
+diff --git a/rtl/instr_list.sv b/rtl/instr_list.sv
+new file mode 100644
+index 0000000..1a44b19
+--- /dev/null
++++ b/rtl/instr_list.sv
+@@ -0,0 +1,11 @@
++localparam bit [6:0] OPCODE_LUI     = 7'b0110111;
++localparam bit [6:0] OPCODE_AUIPC   = 7'b0010111;
++localparam bit [6:0] OPCODE_OP_IMM  = 7'b0010011;
++
++typedef struct {
++  bit [6:0] opcode;
++  bit       is_funct3;
++  bit [2:0] funct3;
++  bit       is_funct7;
++  bit [6:0] funct7;
++} instr_op_t;
+diff --git a/rtl/mem.sv b/rtl/mem.sv
+new file mode 100644
+index 0000000..c92bda1
+--- /dev/null
++++ b/rtl/mem.sv
+@@ -0,0 +1,5 @@
++package mem;
++  function bit[31:0] mem(bit[31:0] addr);
++    return 32'h123450B7;
++  endfunction
++endpackage
+diff --git a/rtl/regs.sv b/rtl/regs.sv
+new file mode 100644
+index 0000000..d8057e4
+--- /dev/null
++++ b/rtl/regs.sv
+@@ -0,0 +1,12 @@
++package regs;
++  typedef enum bit[4:0] {
++    ZERO, RA, SP, GP, TP,
++    T0, T1, T2, S0, S1, A10,
++    A1, A2, A3, A4, A5, A6, A7,
++    S2, S3, S4, S5, S6, S7, S8, S9,
++    S10, S11, T3, T4, T5, T6
++  } reg_t;
++
++  bit [31:0] reg_page [31:0];
++  bit [31:0] pc;
++endpackage
+diff --git a/sources.f b/sources.f
+new file mode 100644
+index 0000000..0bffa5a
+--- /dev/null
++++ b/sources.f
+@@ -0,0 +1,5 @@
++rtl/instr_list.sv
++rtl/instr.sv
++rtl/mem.sv
++rtl/regs.sv
++rtl/control_unit.sv
+diff --git a/tb/top.sv b/tb/top.sv
+new file mode 100644
+index 0000000..0c3150f
+--- /dev/null
++++ b/tb/top.sv
+@@ -0,0 +1,23 @@
++module t;
++  logic clk;
++  cu c(clk);
++
++  initial forever #1 clk = ~clk;
++
++  initial begin
++    $display("Creating instr");
++    @(posedge clk);
++    $display("Fetched instr: %h", c.fetched_instr);
++    $display("Decoded instr: %p", c.decoded_instr);
++    @(posedge clk);
++    $display("Fetched instr: %h", c.fetched_instr);
++    $display("Decoded instr: %p", c.decoded_instr);
++    @(posedge clk);
++    $display("Fetched instr: %h", c.fetched_instr);
++    $display("Decoded instr: %p", c.decoded_instr);
++
++    repeat(10) @(posedge clk);
++    $display("All finished");
++    $finish();
++  end
++endmodule
