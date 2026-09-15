@@ -3,7 +3,8 @@ module decoder(input bit [31:0] instruction,
                output operation_type op_type,
                output bit [31:0] instr_op1,
                output bit [31:0] instr_op2,
-               output regs::reg_t out_reg);
+               output regs::reg_t out_reg, 
+               input bit en);
 
   bit[6:0] opcode;
   bit[6:0] funct7;
@@ -22,11 +23,13 @@ module decoder(input bit [31:0] instruction,
   assign imm    = instruction[31:20];
 
   always @(posedge iclk) begin
-    case (opcode)
-      OPCODE_MATH: handle_math_opcode();
-      OPCODE_MATH_IMM: handle_imm_math_opcode();
-      default: $error("Unknown %h opcode", opcode);
-    endcase
+    if (en) begin
+      case (opcode)
+        OPCODE_MATH: handle_math_opcode();
+        OPCODE_MATH_IMM: handle_imm_math_opcode();
+        default: $display("Unknown %h opcode", opcode);//$error("Unknown %h opcode", opcode);
+      endcase
+    end
   end
 
   function void handle_math_opcode();
@@ -46,10 +49,10 @@ module decoder(input bit [31:0] instruction,
             instr_op1 = regs::reg_page[rs1];
             instr_op2 = regs::reg_page[rs2];
           end
-          default: $error("Unknown funct7 %h for %h opcode %h funct3", funct7, opcode, funct3);
+          default: $error("Unknown funct7(%b) for opcode(%b) funct3(%b):: instr: %08h", funct7, opcode, funct3, instruction);
         endcase
       end
-      default: $error("Unknown funct3 %h for %h opcode", funct7, opcode);
+      default: $error("Unknown funct3(%b) for opcode(%b):: instr:%08h", funct7, opcode, instruction);
     endcase
   endfunction
 
