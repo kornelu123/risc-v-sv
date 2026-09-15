@@ -1,5 +1,5 @@
 simulate:
-	verilator --binary ./tb/top.sv -o out -f sources.f --top-module t -Wno-WIDTHTRUNC -Wno-WIDTHEXPAND
+	verilator --binary ./tb/top.sv -o out -f sources.f --top-module t -Wno-WIDTHTRUNC -Wno-WIDTHEXPAND -DTESTFILE_PATH='"./test/test.bin"'
 	./obj_dir/out
 
 clean:
