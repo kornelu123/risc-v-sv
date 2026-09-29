@@ -1,5 +1,5 @@
 typedef enum {
-  ADD, SUB
+  ADD, SUB, SLLI
 } operation_type;
 
 module alu(input bit [31:0] op1,
@@ -20,6 +20,8 @@ module alu(input bit [31:0] op1,
           res = op1 + op2;
         SUB:
           res = op1 - op2;
+        SLLI:
+          res = op1 << op2;
         default:
           throw_error();
       endcase

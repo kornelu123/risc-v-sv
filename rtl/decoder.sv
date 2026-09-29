@@ -27,7 +27,13 @@ module decoder(input bit [31:0] instruction,
       case (opcode)
         OPCODE_MATH: handle_math_opcode();
         OPCODE_MATH_IMM: handle_imm_math_opcode();
-        default: $display("Unknown %h opcode", opcode);//$error("Unknown %h opcode", opcode);
+        OPCODE_LUI: begin
+          op_type = SLLI;
+          out_reg = rd;
+          instr_op1 = 32'(signed'(imm));
+          instr_op2 = 32'(signed'(12));
+        end
+        default: $display("Unknown %h opcode", opcode);// $error("Unknown %h opcode", opcode);
       endcase
     end
   end
