@@ -217,12 +217,96 @@ jal_forward:
     jal x11, .Lfar_return
 
 .Lafter_far:
-    # Completion signature. This indicates reaching the end;
-    # the testbench must still check intermediate results.
     lui  x31, 0x00006
     addi x31, x31, 13        # x31 = 0x0000600d
                             # x20 = 0x000003ff
 
+    # ---------------------------------------------------------
+    # Self-check, then ECALL. a0 = 0 on pass, otherwise a0 is
+    # the number of the failed check. x17 is checked first and
+    # then holds the check number; x21/x22 are checked to be
+    # zero and then used as scratch.
+    # ---------------------------------------------------------
+    .macro expect_zero reg, id
+        li   x17, \id
+        bnez \reg, .Lfail
+    .endm
+
+    .macro expect reg, id        # reg must equal x21
+        li   x17, \id
+        bne  \reg, x21, .Lfail
+    .endm
+
 .globl test_done
 test_done:
-    jal x0, test_done        # Stop here in your testbench.
+    bnez x17, .Lfail_x17
+    expect_zero x18, 2
+    expect_zero x19, 3
+    expect_zero x21, 4
+    expect_zero x22, 5
+    expect_zero x23, 6
+    expect_zero x24, 7
+    expect_zero x25, 8
+    expect_zero x26, 9
+    expect_zero x27, 10
+    expect_zero x28, 11
+    expect_zero x29, 12
+    expect_zero x30, 13
+
+    li   x21, 0x12345000
+    expect x3, 14
+    li   x21, 0x7ffff000
+    expect x4, 15
+    li   x21, 0x7fffffff
+    expect x7, 16
+    li   x21, 1
+    expect x8, 17
+    li   x21, 0x80000000
+    expect x9, 18
+    li   x21, 0x3ff
+    expect x20, 19
+    li   x21, 0x600d
+    expect x31, 20
+
+    lla  x21, auipc_zero
+    expect x12, 21
+    lla  x21, auipc_positive
+    li   x22, 0x1000
+    add  x21, x21, x22
+    expect x13, 22
+    lla  x21, auipc_pattern
+    li   x22, 0x12345000
+    add  x21, x21, x22
+    expect x14, 23
+    lla  x21, auipc_negative
+    li   x22, -0x1000
+    add  x21, x21, x22
+    expect x15, 24
+    lla  x21, auipc_sign_bit
+    li   x22, 0x80000000
+    add  x21, x21, x22
+    expect x16, 25
+
+    lla  x21, jal_forward + 4
+    expect x1, 26
+    lla  x21, .Lbackward_call + 4
+    expect x2, 27
+    lla  x21, .Ljr_min_base + 16   # link of the jalr at base + 12
+    expect x6, 28
+    lla  x21, .Ljr_min_base
+    addi x21, x21, 2047
+    addi x21, x21, 21
+    expect x5, 29
+    lla  x21, .Lfar_call + 4
+    expect x10, 30
+    lla  x21, .Lfar_target + 4
+    expect x11, 31
+
+    li   a0, 0
+    ecall
+
+.Lfail_x17:
+    li   x17, 1
+.Lfail:
+    mv   a0, x17
+    ecall

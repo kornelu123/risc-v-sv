@@ -1,24 +1,41 @@
 RISCV_PREFIX ?= riscv64-linux-gnu-
+BUILD        ?= build
 TEST         ?= test/test
 
-.PHONY: simulate lint dasm clean
+CC      := $(RISCV_PREFIX)gcc
+OBJCOPY := $(RISCV_PREFIX)objcopy
+OBJDUMP := $(RISCV_PREFIX)objdump
+CFLAGS  := -march=rv32i -mabi=ilp32 -static -mcmodel=medany -fno-pie -no-pie \
+           -nostdlib -nostartfiles -Wl,--build-id=none -Wl,--no-warn-rwx-segments \
+           -T test/link.ld
 
-simulate: $(TEST).bin
-	verilator --binary ./tb/top.sv -o out -f sources.f --top-module t -DTESTFILE_PATH='"$(TEST).bin"'
-	./obj_dir/out
+RTL := $(shell cat sources.f)
+SIM := $(BUILD)/obj_dir/Vt
+
+.PHONY: simulate lint dasm clean
+# Keep intermediate .elf files for `make dasm`.
+.SECONDARY:
+
+# Run $(TEST).S with an instruction trace.
+simulate: $(SIM) $(BUILD)/$(TEST).bin
+	$(SIM) +bin=$(BUILD)/$(TEST).bin +trace
 
 lint:
-	verilator --lint-only -Wall -Wno-UNUSEDPARAM -Wno-DECLFILENAME ./tb/top.sv -f sources.f --top-module t -DTESTFILE_PATH='""'
+	verilator --lint-only -Wall -Wno-DECLFILENAME -f sources.f tb/top.sv --top-module t
 
-$(TEST).elf: $(TEST).S test/link.ld
-	$(RISCV_PREFIX)gcc -nostdlib -nostartfiles -ffreestanding -march=rv32i -mabi=ilp32 \
-	    -T test/link.ld -o $@ $<
-
-$(TEST).bin: $(TEST).elf
-	$(RISCV_PREFIX)objcopy -O binary $< $@
-
-dasm: $(TEST).elf
-	$(RISCV_PREFIX)objdump -d $<
+dasm: $(BUILD)/$(TEST).elf
+	$(OBJDUMP) -d $<
 
 clean:
-	rm -rf obj_dir/ $(TEST).elf $(TEST).bin
+	rm -rf $(BUILD) obj_dir
+
+$(SIM): $(RTL) tb/top.sv sources.f
+	@mkdir -p $(BUILD)
+	verilator --binary -j 0 --Mdir $(BUILD)/obj_dir -o Vt -f sources.f tb/top.sv --top-module t
+
+$(BUILD)/%.elf: %.S test/link.ld
+	@mkdir -p $(@D)
+	$(CC) $(CFLAGS) -o $@ $<
+
+$(BUILD)/%.bin: $(BUILD)/%.elf
+	$(OBJCOPY) -O binary $< $@
