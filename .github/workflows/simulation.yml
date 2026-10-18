@@ -27,13 +27,13 @@ jobs:
       - name: Simulate test/test.S
         run: make simulate
 
-      - name: Run riscv-tests (rv32ui)
+      - name: Run riscv-tests (rv32ui, rv32um)
         run: make riscv-tests
 
       - name: Upload riscv-tests logs
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: rv32ui-logs
-          path: build/rv32ui/*.log
+          name: riscv-tests-logs
+          path: build/isa/**/*.log
           if-no-files-found: ignore

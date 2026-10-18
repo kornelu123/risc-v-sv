@@ -1,37 +1,23 @@
-// Combinational RV32I decoder. Register operands arrive already forwarded,
-// so jumps and branches are resolved here (no wrong-path fetch, no flush).
+// Combinational RV32I decoder (ID stage). It only looks at the instruction
+// bits; operands are selected and branches resolved later, in EX.
 module decoder import isa::*; (
-  input  bit [31:0]     instruction,
-  input  bit [31:0]     instruction_pc,
-  input  bit [31:0]     rs1_val,
-  input  bit [31:0]     rs2_val,
-  output regs::reg_t    rs1,
-  output regs::reg_t    rs2,
-  output operation_type op_type,
-  output bit [31:0]     instr_op1,
-  output bit [31:0]     instr_op2,
-  output regs::reg_t    out_reg,
-  output bit            out_we,
-  output bit            mem_read,
-  output bit            mem_write,
-  output bit [2:0]      mem_funct3,
-  output bit [31:0]     store_data,
-  output bit            jump,
-  output bit [31:0]     jump_target,
-  output bit            halt,       // ECALL / EBREAK
-  output bit            illegal
+  input  bit [31:0]  instruction,
+  output regs::reg_t rs1,
+  output regs::reg_t rs2,
+  output bit         uses_rs1,   // rs1/rs2 are real operands (load-use check)
+  output bit         uses_rs2,
+  output ctrl_t      ctrl
 );
   bit [6:0]  opcode;
   bit [6:0]  funct7;
   bit [2:0]  funct3;
   bit [31:0] imm_i, imm_s, imm_b, imm_u, imm_j;
 
-  assign opcode  = instruction[6:0];
-  assign funct3  = instruction[14:12];
-  assign funct7  = instruction[31:25];
-  assign out_reg = regs::reg_t'(instruction[11:7]);
-  assign rs1     = regs::reg_t'(instruction[19:15]);
-  assign rs2     = regs::reg_t'(instruction[24:20]);
+  assign opcode = instruction[6:0];
+  assign funct3 = instruction[14:12];
+  assign funct7 = instruction[31:25];
+  assign rs1    = regs::reg_t'(instruction[19:15]);
+  assign rs2    = regs::reg_t'(instruction[24:20]);
 
   assign imm_i = {{20{instruction[31]}}, instruction[31:20]};
   assign imm_s = {{20{instruction[31]}}, instruction[31:25], instruction[11:7]};
@@ -41,154 +27,168 @@ module decoder import isa::*; (
   assign imm_j = {{12{instruction[31]}}, instruction[19:12], instruction[20],
                   instruction[30:21], 1'b0};
 
-  assign mem_funct3 = funct3;
-  assign store_data = rs2_val;
-
   always_comb begin
-    op_type     = ALU_ADD;
-    instr_op1   = 32'd0;
-    instr_op2   = 32'd0;
-    out_we      = 1'b0;
-    mem_read    = 1'b0;
-    mem_write   = 1'b0;
-    jump        = 1'b0;
-    jump_target = 32'd0;
-    halt        = 1'b0;
-    illegal     = 1'b0;
+    ctrl        = '0;
+    ctrl.rd     = regs::reg_t'(instruction[11:7]);
+    ctrl.funct3 = funct3;
+    uses_rs1    = 1'b0;
+    uses_rs2    = 1'b0;
 
     case (opcode)
       OPCODE_LUI: begin
-        out_we    = 1'b1;
-        instr_op2 = imm_u;                     // 0 + imm
+        ctrl.rd_we   = 1'b1;
+        ctrl.op1_sel = OP1_ZERO;
+        ctrl.op2_sel = OP2_IMM;
+        ctrl.imm     = imm_u;
       end
 
       OPCODE_AUIPC: begin
-        out_we    = 1'b1;
-        instr_op1 = instruction_pc;
-        instr_op2 = imm_u;
+        ctrl.rd_we   = 1'b1;
+        ctrl.op1_sel = OP1_PC;
+        ctrl.op2_sel = OP2_IMM;
+        ctrl.imm     = imm_u;
       end
 
       OPCODE_JAL: begin
-        out_we      = 1'b1;                    // rd = pc + 4 via the ALU
-        instr_op1   = instruction_pc;
-        instr_op2   = 32'd4;
-        jump        = 1'b1;
-        jump_target = instruction_pc + imm_j;
+        ctrl.rd_we   = 1'b1;                   // rd = pc + 4
+        ctrl.op1_sel = OP1_PC;
+        ctrl.op2_sel = OP2_FOUR;
+        ctrl.imm     = imm_j;                  // target = pc + imm
+        ctrl.jal     = 1'b1;
       end
 
       OPCODE_JALR: begin
-        if (funct3 != FUNCT3_JALR) illegal = 1'b1;
-        out_we      = 1'b1;
-        instr_op1   = instruction_pc;
-        instr_op2   = 32'd4;
-        jump        = 1'b1;
-        jump_target = (rs1_val + imm_i) & ~32'd1;
+        if (funct3 != FUNCT3_JALR) ctrl.illegal = 1'b1;
+        ctrl.rd_we    = 1'b1;
+        ctrl.op1_sel  = OP1_PC;
+        ctrl.op2_sel  = OP2_FOUR;
+        ctrl.imm      = imm_i;                 // target = (rs1 + imm) & ~1
+        ctrl.jalr     = 1'b1;
+        uses_rs1 = 1'b1;
       end
 
       OPCODE_BRANCH: begin
         case (funct3)
-          FUNCT3_BEQ:  jump = rs1_val == rs2_val;
-          FUNCT3_BNE:  jump = rs1_val != rs2_val;
-          FUNCT3_BLT:  jump = $signed(rs1_val) <  $signed(rs2_val);
-          FUNCT3_BGE:  jump = $signed(rs1_val) >= $signed(rs2_val);
-          FUNCT3_BLTU: jump = rs1_val <  rs2_val;
-          FUNCT3_BGEU: jump = rs1_val >= rs2_val;
-          default:     illegal = 1'b1;
+          FUNCT3_BEQ, FUNCT3_BNE, FUNCT3_BLT,
+          FUNCT3_BGE, FUNCT3_BLTU, FUNCT3_BGEU: ;
+          default: ctrl.illegal = 1'b1;
         endcase
-        jump_target = instruction_pc + imm_b;
+        ctrl.imm      = imm_b;
+        ctrl.branch   = 1'b1;
+        uses_rs1 = 1'b1;
+        uses_rs2 = 1'b1;
       end
 
       OPCODE_LOAD: begin
         case (funct3)
           FUNCT3_LB, FUNCT3_LH, FUNCT3_LW, FUNCT3_LBU, FUNCT3_LHU: ;
-          default: illegal = 1'b1;
+          default: ctrl.illegal = 1'b1;
         endcase
-        out_we    = 1'b1;
-        mem_read  = 1'b1;
-        instr_op1 = rs1_val;                   // address = rs1 + imm
-        instr_op2 = imm_i;
+        ctrl.rd_we    = 1'b1;
+        ctrl.mem_read = 1'b1;
+        ctrl.op2_sel  = OP2_IMM;               // address = rs1 + imm
+        ctrl.imm      = imm_i;
+        uses_rs1 = 1'b1;
       end
 
       OPCODE_STORE: begin
         case (funct3)
           FUNCT3_SB, FUNCT3_SH, FUNCT3_SW: ;
-          default: illegal = 1'b1;
+          default: ctrl.illegal = 1'b1;
         endcase
-        mem_write = 1'b1;
-        instr_op1 = rs1_val;
-        instr_op2 = imm_s;
+        ctrl.mem_write = 1'b1;
+        ctrl.op2_sel   = OP2_IMM;
+        ctrl.imm       = imm_s;
+        uses_rs1 = 1'b1;
+        uses_rs2 = 1'b1;                     // store data
       end
 
       OPCODE_OP_IMM: begin
-        out_we    = 1'b1;
-        instr_op1 = rs1_val;
-        instr_op2 = imm_i;
+        ctrl.rd_we    = 1'b1;
+        ctrl.op2_sel  = OP2_IMM;
+        ctrl.imm      = imm_i;
+        uses_rs1 = 1'b1;
         case (funct3)
-          FUNCT3_ADD_SUB: op_type = ALU_ADD;
-          FUNCT3_SLT:     op_type = ALU_SLT;
-          FUNCT3_SLTU:    op_type = ALU_SLTU;
-          FUNCT3_XOR:     op_type = ALU_XOR;
-          FUNCT3_OR:      op_type = ALU_OR;
-          FUNCT3_AND:     op_type = ALU_AND;
+          FUNCT3_ADD_SUB: ctrl.alu_op = ALU_ADD;
+          FUNCT3_SLT:     ctrl.alu_op = ALU_SLT;
+          FUNCT3_SLTU:    ctrl.alu_op = ALU_SLTU;
+          FUNCT3_XOR:     ctrl.alu_op = ALU_XOR;
+          FUNCT3_OR:      ctrl.alu_op = ALU_OR;
+          FUNCT3_AND:     ctrl.alu_op = ALU_AND;
           FUNCT3_SLL: begin
-            op_type = ALU_SLL;
-            if (funct7 != FUNCT7_BASE) illegal = 1'b1;
+            ctrl.alu_op = ALU_SLL;
+            if (funct7 != FUNCT7_BASE) ctrl.illegal = 1'b1;
           end
           FUNCT3_SRL_SRA: begin
-            if      (funct7 == FUNCT7_BASE) op_type = ALU_SRL;
-            else if (funct7 == FUNCT7_ALT)  op_type = ALU_SRA;
-            else illegal = 1'b1;
+            if      (funct7 == FUNCT7_BASE) ctrl.alu_op = ALU_SRL;
+            else if (funct7 == FUNCT7_ALT)  ctrl.alu_op = ALU_SRA;
+            else ctrl.illegal = 1'b1;
           end
         endcase
       end
 
       OPCODE_OP: begin
-        out_we    = 1'b1;
-        instr_op1 = rs1_val;
-        instr_op2 = rs2_val;
+        ctrl.rd_we    = 1'b1;
+        uses_rs1 = 1'b1;
+        uses_rs2 = 1'b1;
         if (funct7 == FUNCT7_BASE) begin
           case (funct3)
-            FUNCT3_ADD_SUB: op_type = ALU_ADD;
-            FUNCT3_SLL:     op_type = ALU_SLL;
-            FUNCT3_SLT:     op_type = ALU_SLT;
-            FUNCT3_SLTU:    op_type = ALU_SLTU;
-            FUNCT3_XOR:     op_type = ALU_XOR;
-            FUNCT3_SRL_SRA: op_type = ALU_SRL;
-            FUNCT3_OR:      op_type = ALU_OR;
-            FUNCT3_AND:     op_type = ALU_AND;
+            FUNCT3_ADD_SUB: ctrl.alu_op = ALU_ADD;
+            FUNCT3_SLL:     ctrl.alu_op = ALU_SLL;
+            FUNCT3_SLT:     ctrl.alu_op = ALU_SLT;
+            FUNCT3_SLTU:    ctrl.alu_op = ALU_SLTU;
+            FUNCT3_XOR:     ctrl.alu_op = ALU_XOR;
+            FUNCT3_SRL_SRA: ctrl.alu_op = ALU_SRL;
+            FUNCT3_OR:      ctrl.alu_op = ALU_OR;
+            FUNCT3_AND:     ctrl.alu_op = ALU_AND;
+          endcase
+        end else if (funct7 == FUNCT7_MULDIV) begin
+          case (funct3)
+            FUNCT3_MUL:    ctrl.alu_op = ALU_MUL;
+            FUNCT3_MULH:   ctrl.alu_op = ALU_MULH;
+            FUNCT3_MULHSU: ctrl.alu_op = ALU_MULHSU;
+            FUNCT3_MULHU:  ctrl.alu_op = ALU_MULHU;
+            FUNCT3_DIV:    ctrl.alu_op = ALU_DIV;
+            FUNCT3_DIVU:   ctrl.alu_op = ALU_DIVU;
+            FUNCT3_REM:    ctrl.alu_op = ALU_REM;
+            FUNCT3_REMU:   ctrl.alu_op = ALU_REMU;
           endcase
         end else if (funct7 == FUNCT7_ALT) begin
           case (funct3)
-            FUNCT3_ADD_SUB: op_type = ALU_SUB;
-            FUNCT3_SRL_SRA: op_type = ALU_SRA;
-            default:        illegal = 1'b1;
+            FUNCT3_ADD_SUB: ctrl.alu_op = ALU_SUB;
+            FUNCT3_SRL_SRA: ctrl.alu_op = ALU_SRA;
+            default:        ctrl.illegal = 1'b1;
           endcase
         end else begin
-          illegal = 1'b1;
+          ctrl.illegal = 1'b1;
         end
       end
 
       // FENCE orders memory between harts/devices; with one in-order hart and
       // a single memory it is a no-op.
       OPCODE_MISC_MEM: begin
-        if (funct3 != FUNCT3_FENCE) illegal = 1'b1;
+        if (funct3 != FUNCT3_FENCE) ctrl.illegal = 1'b1;
       end
 
       OPCODE_SYSTEM: begin
-        if (instruction == INSTR_ECALL || instruction == INSTR_EBREAK) halt = 1'b1;
-        else illegal = 1'b1;
+        if (instruction == INSTR_ECALL || instruction == INSTR_EBREAK) ctrl.halt = 1'b1;
+        else ctrl.illegal = 1'b1;
       end
 
-      default: illegal = 1'b1;
+      default: ctrl.illegal = 1'b1;
     endcase
 
-    if (illegal) begin
-      out_we    = 1'b0;
-      mem_read  = 1'b0;
-      mem_write = 1'b0;
-      jump      = 1'b0;
-      halt      = 1'b0;
+    if (ctrl.illegal) begin
+      ctrl.rd_we     = 1'b0;
+      ctrl.mem_read  = 1'b0;
+      ctrl.mem_write = 1'b0;
+      ctrl.branch    = 1'b0;
+      ctrl.jal       = 1'b0;
+      ctrl.jalr      = 1'b0;
+      ctrl.halt      = 1'b0;
+      uses_rs1       = 1'b0;
+      uses_rs2       = 1'b0;
     end
-    if (out_reg == regs::ZERO) out_we = 1'b0;  // x0 is never written or forwarded
+    if (ctrl.rd == regs::ZERO) ctrl.rd_we = 1'b0;  // x0 is never written or forwarded
   end
 endmodule
