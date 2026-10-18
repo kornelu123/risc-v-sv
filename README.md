@@ -21,7 +21,7 @@ Classic 5-stage pipeline: IF, ID, EX, MEM, WB.
 ## Usage
 
     make simulate      # build test/test.S and run it with an instruction trace
-    make riscv-tests   # run the official rv32ui tests (fence_i excluded: Zifencei)
+    make riscv-tests   # run the official rv32ui and rv32um tests (fence_i excluded: Zifencei)
     make               # both
     make lint
     make dasm          # disassemble test/test.S

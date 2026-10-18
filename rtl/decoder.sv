@@ -142,6 +142,17 @@ module decoder import isa::*; (
             FUNCT3_OR:      ctrl.alu_op = ALU_OR;
             FUNCT3_AND:     ctrl.alu_op = ALU_AND;
           endcase
+        end else if (funct7 == FUNCT7_MULDIV) begin
+          case (funct3)
+            FUNCT3_MUL:    ctrl.alu_op = ALU_MUL;
+            FUNCT3_MULH:   ctrl.alu_op = ALU_MULH;
+            FUNCT3_MULHSU: ctrl.alu_op = ALU_MULHSU;
+            FUNCT3_MULHU:  ctrl.alu_op = ALU_MULHU;
+            FUNCT3_DIV:    ctrl.alu_op = ALU_DIV;
+            FUNCT3_DIVU:   ctrl.alu_op = ALU_DIVU;
+            FUNCT3_REM:    ctrl.alu_op = ALU_REM;
+            FUNCT3_REMU:   ctrl.alu_op = ALU_REMU;
+          endcase
         end else if (funct7 == FUNCT7_ALT) begin
           case (funct3)
             FUNCT3_ADD_SUB: ctrl.alu_op = ALU_SUB;
