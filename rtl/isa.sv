@@ -1,4 +1,4 @@
-// RV32I encodings shared by the decoder, ALU and memory.
+// RV32I encodings and the decoded control word shared by the pipeline stages.
 package isa;
   // Opcodes
   localparam bit [6:0] OPCODE_LUI      = 7'b0110111;
@@ -57,4 +57,25 @@ package isa;
     ALU_ADD, ALU_SUB, ALU_SLL, ALU_SLT, ALU_SLTU,
     ALU_XOR, ALU_SRL, ALU_SRA, ALU_OR,  ALU_AND
   } operation_type;
+
+  typedef enum bit [1:0] { OP1_RS1, OP1_PC, OP1_ZERO } op1_sel_t;
+  typedef enum bit [1:0] { OP2_RS2, OP2_IMM, OP2_FOUR } op2_sel_t;
+
+  // Everything the later stages need to know about one instruction.
+  typedef struct packed {
+    operation_type alu_op;
+    op1_sel_t      op1_sel;
+    op2_sel_t      op2_sel;
+    bit [31:0]     imm;
+    regs::reg_t    rd;
+    bit            rd_we;
+    bit            mem_read;
+    bit            mem_write;
+    bit [2:0]      funct3;     // load/store width, branch condition
+    bit            branch;
+    bit            jal;
+    bit            jalr;
+    bit            halt;       // ECALL / EBREAK
+    bit            illegal;
+  } ctrl_t;
 endpackage
