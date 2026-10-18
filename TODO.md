@@ -33,11 +33,12 @@ Every step ends with a test that must pass in `make` and CI.
       `mtval`, `mie`, `mip`.
 - [ ] `wfi` (may be a no-op).
 - [ ] **Zicntr**: `cycle/time/instret` (+ `cycleh/timeh/instreth` on RV32).
-- [ ] **Test infra**: `ecall` becomes a real trap, so stop ending tests on it.
-      Use the official riscv-tests `p` environment (`git submodule update
-      --init` inside `third_party/riscv-tests` for `env/`) and end tests via
-      writes to `tohost`; the testbench watches that address.
-      Acceptance: `rv32ui`, `rv32um` still pass; `rv32mi` passes.
+- [x] **Test infra**: tests end by writing `tohost` (testbench watches it), so
+      `ecall` is free to become a real trap. `make priv-tests` builds `rv32mi`
+      with the official riscv-tests `p` environment, plus `test/priv/mmode.S`
+      for what `rv32mi` does not check on an M-only hart.
+      Acceptance: `rv32ui`, `rv32um` still pass; `make priv-tests` passes
+      (then add it to CI).
 
 ## 2. Core: remaining Linux ISA requirements
 
