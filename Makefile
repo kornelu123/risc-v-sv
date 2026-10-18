@@ -35,7 +35,7 @@ riscv-tests: $(SIM) $(RV32UI_TESTS:%=$(BUILD)/rv32ui/%.bin)
 	done; exit $$fail
 
 lint:
-	verilator --lint-only -Wall -Wno-DECLFILENAME -f sources.f tb/top.sv --top-module t
+	verilator --lint-only --timing -Wall -Wno-DECLFILENAME -f sources.f tb/top.sv --top-module t
 
 dasm: $(BUILD)/$(TEST).elf
 	$(OBJDUMP) -d $<
