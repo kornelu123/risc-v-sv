@@ -12,6 +12,7 @@ localparam bit [2:0] FUNCT3_IMM_ADD        = 3'b000;
 localparam bit [6:0] FUNCT7_MATH_BASIC_ADD = 7'b0000000;
 localparam bit [6:0] FUNCT7_MATH_BASIC_SUB = 7'b0100000;
 
+localparam bit [2:0] FUNCT3_JALR    = 3'b000;
 localparam bit [2:0] FUNCT3_BEQ     = 3'b000;
 localparam bit [2:0] FUNCT3_BNE     = 3'b001;
 localparam bit [2:0] FUNCT3_BLT     = 3'b100;

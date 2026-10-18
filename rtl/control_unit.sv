@@ -8,6 +8,8 @@ module cu(input logic iclk,
   bit [31:0] toexecute_instr_op1, toexecute_instr_op2;
   bit [31:0] executed_instr_result;
 
+  bit [31:0] fetched_pc, todecode_pc;
+
   regs::reg_t decoded_result_reg, towrite_result_reg, toexecute_result_reg, written_result_reg;
   operation_type decoded_instr_operation_type;
   operation_type toexecute_instr_operation_type;
@@ -16,14 +18,17 @@ module cu(input logic iclk,
   string debug_print[3];
 
   bit en_dec, en_alu, en_wb;
+  bit pc_upd;
 
-  decoder d(todecode_instr,
+  decoder d(mem::mem(regs::pc),
+            regs::pc,
             iclk,
             decoded_instr_operation_type,
             decoded_instr_op1,
             decoded_instr_op2,
             decoded_result_reg,
-            en_dec);
+            en_dec,
+            pc_upd);
 
   alu a(toexecute_instr_op1,
         toexecute_instr_op2,
@@ -32,12 +37,17 @@ module cu(input logic iclk,
         executed_instr_result,
         en_alu);
 
+  always @(negedge iclk) begin
+    if (!pc_upd) regs::pc += 4;
+  end
+
   always @(posedge iclk) begin
-    static bit [31:0] dbg_instr   [0:2];
-    static bit [31:0] dbg_op1     [0:2];
-    static bit [31:0] dbg_op2     [0:2];
-    static regs::reg_t dbg_rd     [0:2];
-    static bit [31:0] dbg_result  [0:2];
+    static bit [31:0] dbg_instr   [0:1];
+    static bit [31:0] dbg_op1     [0:1];
+    static bit [31:0] dbg_op2     [0:1];
+    static regs::reg_t dbg_rd     [0:1];
+    static bit [31:0] dbg_result  [0:1];
+    static bit [31:0] dbg_pc      [0:1];
     
     en_wb   <= en_alu;
     en_alu  <= en_dec;
@@ -51,34 +61,32 @@ module cu(input logic iclk,
     toexecute_instr_op2            <= decoded_instr_op2;
     toexecute_instr_operation_type <= decoded_instr_operation_type;
     toexecute_result_reg           <= decoded_result_reg;
-  
-    todecode_instr                 <= fetched_instr;
-    fetched_instr                  <= mem::mem(regs::pc);
-  
-    dbg_instr[0]  <= fetched_instr;
+
+    dbg_instr[0]  <= mem::mem(regs::pc);
+    dbg_op1[0]    <= toexecute_instr_op1;
+    dbg_op2[0]    <= toexecute_instr_op2;
+    dbg_rd[0]     <= toexecute_result_reg;
+    dbg_pc[0]     <= regs::pc;
   
     dbg_instr[1]  <= dbg_instr[0];
-    dbg_op1[1]    <= toexecute_instr_op1;
-    dbg_op2[1]    <= toexecute_instr_op2;
-    dbg_rd[1]     <= toexecute_result_reg;
+    dbg_op1[1]    <= dbg_op1[0];
+    dbg_op2[1]    <= dbg_op2[0];
+    dbg_rd[1]     <= dbg_rd[0];
+    dbg_result[1] <= executed_instr_result;
+    dbg_pc[1]     <= dbg_pc[0];
   
-    dbg_instr[2]  <= dbg_instr[1];
-    dbg_op1[2]    <= dbg_op1[1];
-    dbg_op2[2]    <= dbg_op2[1];
-    dbg_rd[2]     <= dbg_rd[1];
-    dbg_result[2] <= executed_instr_result;
-  
-    if (debug_counter >= 2) begin
-      $display("<<< 0x%08h : op1(0x%08h) op2(0x%08h) res_reg(%p) <<< result(0x%08h)",
-               dbg_instr[2],
-               dbg_op1[2],
-               dbg_op2[2],
-               dbg_rd[2],
-               dbg_result[2]);
+    if (debug_counter >= 1) begin
+      $display("(0x%08h) <<< 0x%08h(%7b) : op1(0x%08h) op2(0x%08h) res_reg(%p) <<< result(0x%08h)",
+               dbg_pc[1],
+               dbg_instr[1],
+               dbg_instr[1][6:0],
+               dbg_op1[1],
+               dbg_op2[1],
+               dbg_rd[1],
+               dbg_result[1]);
     end
   
     debug_counter++;
-    regs::pc <= regs::pc + 4;
 
     if (en_wb) begin
       if (written_result_reg != regs::ZERO) begin

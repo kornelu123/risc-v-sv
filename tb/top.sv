@@ -8,7 +8,7 @@ module t;
   initial begin
     mem::read_from_file(`TESTFILE_PATH);
     en = 1'b1;
-    repeat (100) begin
+    repeat (300) begin
       @(posedge clk);
     end
     $finish();
