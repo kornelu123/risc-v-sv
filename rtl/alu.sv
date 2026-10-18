@@ -1,33 +1,17 @@
-typedef enum {
-  ADD, SUB, SLLI, SHL12ADD, NONE
+typedef enum logic [3:0] {
+  ADD, SUB
 } operation_type;
 
-module alu(input bit [31:0] op1,
-           input bit [31:0] op2,
-           input operation_type op_type,
-           input bit iclk,
-           output bit [31:0] res,
-           input bit en);
+module alu(input  bit [31:0]     op1,
+           input  bit [31:0]     op2,
+           input  operation_type op_type,
+           output bit [31:0]     res);
 
-  function void throw_error();
-    $error("ERROR THROWN");
-  endfunction
-
-  always @(negedge iclk) begin
-    if (en) begin
-      case (op_type)
-        ADD:
-          res = op1 + op2;
-        SUB:
-          res = op1 - op2;
-        SLLI:
-          res = op1 << op2;
-        SHL12ADD:
-          res = op1 + (op2 << 12);
-        NONE:; // Do nothing
-        default:
-          throw_error();
-      endcase
-    end
+  always_comb begin
+    case (op_type)
+      ADD:     res = op1 + op2;
+      SUB:     res = op1 - op2;
+      default: res = 32'd0;
+    endcase
   end
 endmodule

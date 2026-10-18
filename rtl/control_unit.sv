@@ -1,96 +1,90 @@
+// 2-stage pipeline on one clock edge:
+//   stage 1: fetch + decode (+ register read with forwarding, jumps resolved)
+//   stage 2: execute + writeback
 module cu(input logic iclk,
-          input logic en);
-  bit [31:0] fetched_instr;
-  bit [31:0] todecode_instr;
+          input logic rst_n);
+  bit [31:0] instr;
 
-  bit [31:0] decoded_instr_op1, decoded_instr_op2;
+  regs::reg_t rs1, rs2;
+  bit [31:0]  rs1_val, rs2_val;
 
-  bit [31:0] toexecute_instr_op1, toexecute_instr_op2;
-  bit [31:0] executed_instr_result;
-
-  bit [31:0] fetched_pc, todecode_pc;
-
-  regs::reg_t decoded_result_reg, towrite_result_reg, toexecute_result_reg, written_result_reg;
   operation_type decoded_instr_operation_type;
+  bit [31:0]     decoded_instr_op1, decoded_instr_op2;
+  regs::reg_t    decoded_result_reg;
+  bit            decoded_we;
+  bit            jump, illegal;
+  bit [31:0]     jump_target;
+
+  bit            toexecute_valid;
   operation_type toexecute_instr_operation_type;
+  bit [31:0]     toexecute_instr_op1, toexecute_instr_op2;
+  regs::reg_t    toexecute_result_reg;
+  bit            toexecute_we;
+  bit [31:0]     toexecute_pc, toexecute_instr;
+  bit [31:0]     executed_instr_result;
 
-  int debug_counter;
-  string debug_print[3];
+  assign instr = mem::mem(regs::pc);
 
-  bit en_dec, en_alu, en_wb;
-  bit pc_upd;
-
-  decoder d(mem::mem(regs::pc),
-            regs::pc,
-            iclk,
-            decoded_instr_operation_type,
-            decoded_instr_op1,
-            decoded_instr_op2,
-            decoded_result_reg,
-            en_dec,
-            pc_upd);
-
-  alu a(toexecute_instr_op1,
-        toexecute_instr_op2,
-        toexecute_instr_operation_type,
-        iclk,
-        executed_instr_result,
-        en_alu);
-
-  always @(negedge iclk) begin
-    if (!pc_upd) regs::pc += 4;
+  // Forwarding: the instruction in execute is written only at the end of
+  // this cycle, so a dependent instruction in decode takes its result directly.
+  always_comb begin
+    rs1_val = (rs1 == regs::ZERO) ? 32'd0 : regs::reg_page[rs1];
+    rs2_val = (rs2 == regs::ZERO) ? 32'd0 : regs::reg_page[rs2];
+    if (toexecute_we && toexecute_result_reg == rs1) rs1_val = executed_instr_result;
+    if (toexecute_we && toexecute_result_reg == rs2) rs2_val = executed_instr_result;
   end
 
-  always @(posedge iclk) begin
-    static bit [31:0] dbg_instr   [0:1];
-    static bit [31:0] dbg_op1     [0:1];
-    static bit [31:0] dbg_op2     [0:1];
-    static regs::reg_t dbg_rd     [0:1];
-    static bit [31:0] dbg_result  [0:1];
-    static bit [31:0] dbg_pc      [0:1];
-    
-    en_wb   <= en_alu;
-    en_alu  <= en_dec;
-    en_dec  <= en;
+  decoder d(.instruction(instr),
+            .instruction_pc(regs::pc),
+            .rs1_val(rs1_val),
+            .rs2_val(rs2_val),
+            .rs1(rs1),
+            .rs2(rs2),
+            .op_type(decoded_instr_operation_type),
+            .instr_op1(decoded_instr_op1),
+            .instr_op2(decoded_instr_op2),
+            .out_reg(decoded_result_reg),
+            .out_we(decoded_we),
+            .jump(jump),
+            .jump_target(jump_target),
+            .illegal(illegal));
 
-    written_result_reg             <= towrite_result_reg;
+  alu a(.op1(toexecute_instr_op1),
+        .op2(toexecute_instr_op2),
+        .op_type(toexecute_instr_operation_type),
+        .res(executed_instr_result));
 
-    towrite_result_reg             <= toexecute_result_reg;
+  always_ff @(posedge iclk) begin
+    if (!rst_n) begin
+      regs::pc        <= 32'd0;
+      toexecute_valid <= 1'b0;
+      toexecute_we    <= 1'b0;
+    end else begin
+      if (illegal)
+        $fatal(1, "Illegal instruction 0x%08h at pc 0x%08h", instr, regs::pc);
+      if (jump && jump_target[1:0] != 2'b00)
+        $fatal(1, "Misaligned jump target 0x%08h at pc 0x%08h", jump_target, regs::pc);
 
-    toexecute_instr_op1            <= decoded_instr_op1;
-    toexecute_instr_op2            <= decoded_instr_op2;
-    toexecute_instr_operation_type <= decoded_instr_operation_type;
-    toexecute_result_reg           <= decoded_result_reg;
+      // Stage 1 -> stage 2
+      regs::pc                       <= jump ? jump_target : regs::pc + 32'd4;
+      toexecute_valid                <= 1'b1;
+      toexecute_instr_operation_type <= decoded_instr_operation_type;
+      toexecute_instr_op1            <= decoded_instr_op1;
+      toexecute_instr_op2            <= decoded_instr_op2;
+      toexecute_result_reg           <= decoded_result_reg;
+      toexecute_we                   <= decoded_we;
+      toexecute_pc                   <= regs::pc;
+      toexecute_instr                <= instr;
 
-    dbg_instr[0]  <= mem::mem(regs::pc);
-    dbg_op1[0]    <= toexecute_instr_op1;
-    dbg_op2[0]    <= toexecute_instr_op2;
-    dbg_rd[0]     <= toexecute_result_reg;
-    dbg_pc[0]     <= regs::pc;
-  
-    dbg_instr[1]  <= dbg_instr[0];
-    dbg_op1[1]    <= dbg_op1[0];
-    dbg_op2[1]    <= dbg_op2[0];
-    dbg_rd[1]     <= dbg_rd[0];
-    dbg_result[1] <= executed_instr_result;
-    dbg_pc[1]     <= dbg_pc[0];
-  
-    if (debug_counter >= 1) begin
-      $display("(0x%08h) <<< 0x%08h(%7b) : op1(0x%08h) op2(0x%08h) res_reg(%p) <<< result(0x%08h)",
-               dbg_pc[1],
-               dbg_instr[1],
-               dbg_instr[1][6:0],
-               dbg_op1[1],
-               dbg_op2[1],
-               dbg_rd[1],
-               dbg_result[1]);
-    end
-  
-    debug_counter++;
-
-    if (en_wb) begin
-      if (written_result_reg != regs::ZERO) begin
-        regs::reg_page[towrite_result_reg] <= executed_instr_result;
+      // Stage 2: writeback + one trace line per retired instruction
+      if (toexecute_we)
+        regs::reg_page[toexecute_result_reg] <= executed_instr_result;
+      if (toexecute_valid) begin
+        if (toexecute_we)
+          $display("(0x%08h) 0x%08h  %p <= 0x%08h", toexecute_pc, toexecute_instr,
+                   toexecute_result_reg, executed_instr_result);
+        else
+          $display("(0x%08h) 0x%08h", toexecute_pc, toexecute_instr);
       end
     end
   end

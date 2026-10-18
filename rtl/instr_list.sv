@@ -19,15 +19,3 @@ localparam bit [2:0] FUNCT3_BLT     = 3'b100;
 localparam bit [2:0] FUNCT3_BGE     = 3'b101;
 localparam bit [2:0] FUNCT3_BLTU    = 3'b110;
 localparam bit [2:0] FUNCT3_BGEU    = 3'b111;
-
-function void throw_error();
-  $error("ERROR THROWN");
-endfunction
-
-typedef struct {
-  bit [6:0] opcode;
-  bit       is_funct3;
-  bit [2:0] funct3;
-  bit       is_funct7;
-  bit [6:0] funct7;
-} instr_op_t;

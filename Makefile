@@ -1,11 +1,14 @@
 RISCV_PREFIX ?= riscv64-linux-gnu-
 TEST         ?= test/test
 
-.PHONY: simulate dasm clean
+.PHONY: simulate lint dasm clean
 
 simulate: $(TEST).bin
-	verilator --binary ./tb/top.sv -o out -f sources.f --top-module t -Wno-WIDTHTRUNC -Wno-WIDTHEXPAND -DTESTFILE_PATH='"$(TEST).bin"'
+	verilator --binary ./tb/top.sv -o out -f sources.f --top-module t -DTESTFILE_PATH='"$(TEST).bin"'
 	./obj_dir/out
+
+lint:
+	verilator --lint-only -Wall -Wno-UNUSEDPARAM -Wno-DECLFILENAME ./tb/top.sv -f sources.f --top-module t -DTESTFILE_PATH='""'
 
 $(TEST).elf: $(TEST).S test/link.ld
 	$(RISCV_PREFIX)gcc -nostdlib -nostartfiles -ffreestanding -march=rv32i -mabi=ilp32 \

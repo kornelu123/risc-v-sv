@@ -1,111 +1,96 @@
-module decoder(input bit [31:0] instruction,
-               input bit [31:0] instruction_pc,
-               input bit iclk,
+module decoder(input  bit [31:0]     instruction,
+               input  bit [31:0]     instruction_pc,
+               input  bit [31:0]     rs1_val,      // already forwarded
+               input  bit [31:0]     rs2_val,      // already forwarded
+               output regs::reg_t    rs1,
+               output regs::reg_t    rs2,
                output operation_type op_type,
-               output bit [31:0] instr_op1,
-               output bit [31:0] instr_op2,
-               output regs::reg_t out_reg, 
-               input bit en,
-               output bit pc_upd);
+               output bit [31:0]     instr_op1,
+               output bit [31:0]     instr_op2,
+               output regs::reg_t    out_reg,
+               output bit            out_we,
+               output bit            jump,
+               output bit [31:0]     jump_target,
+               output bit            illegal);
 
-  bit[6:0] opcode;
-  bit[6:0] funct7;
-  regs::reg_t rs2;
-  regs::reg_t rs1;
-  bit[2:0] funct3;
-  regs::reg_t rd;
-  bit[11:0] imm;
-  bit[20:0] Jimm;
+  bit [6:0]  opcode;
+  bit [6:0]  funct7;
+  bit [2:0]  funct3;
+  bit [31:0] imm_i, imm_u, imm_j;
 
-  assign opcode         = instruction[6:0];
-  assign funct7         = instruction[31:25];
-  assign rs2            = regs::reg_t'(instruction[24:20]);
-  assign rs1            = regs::reg_t'(instruction[19:15]);
-  assign funct3         = instruction[14:12];
-  assign rd             = regs::reg_t'(instruction[11:7]);
-  assign imm            = instruction[31:20];
+  assign opcode  = instruction[6:0];
+  assign funct3  = instruction[14:12];
+  assign funct7  = instruction[31:25];
+  assign out_reg = regs::reg_t'(instruction[11:7]);
+  assign rs1     = regs::reg_t'(instruction[19:15]);
+  assign rs2     = regs::reg_t'(instruction[24:20]);
 
-  assign Jimm[10:1]     = instruction[30:21];
-  assign Jimm[19:12]    = instruction[19:12];
-  assign Jimm[20]       = instruction[31];
-  assign Jimm[11]       = instruction[20];
+  assign imm_i = {{20{instruction[31]}}, instruction[31:20]};
+  assign imm_u = {instruction[31:12], 12'b0};
+  assign imm_j = {{12{instruction[31]}}, instruction[19:12], instruction[20],
+                  instruction[30:21], 1'b0};
 
-  always @(posedge iclk) begin
-    pc_upd = 1'b0;
-    if (en) begin
-      case (opcode)
-        OPCODE_MATH: handle_math_opcode();
-        OPCODE_MATH_IMM: handle_imm_math_opcode();
-        OPCODE_LUI: begin
-          op_type = SLLI;
-          out_reg = rd;
-          instr_op1 = 32'(signed'(imm));
-          instr_op2 = 32'(signed'(12));
-        end
-        OPCODE_AUIPC: begin
-          op_type = SHL12ADD;
-          out_reg = rd;
-          instr_op1 = 32'(signed'(imm));
-          instr_op2 = 32'(signed'(instruction_pc));
-        end
-        // We need to handle unconditional jump instr
-        // ASAP, so we do it here
-        OPCODE_JAL: begin
-          $display("JAL");
-          op_type = NONE;
-          regs::reg_page[rd] = regs::pc + 4;
-          if (rd == regs::ZERO) begin
-            regs::pc = signed'(Jimm);
-          end else begin
-            regs::pc = signed'(Jimm) + instruction_pc;
-          end
-          if (regs::pc[3:0] & 2'b11) $error("Misaligned instr access");
-          $display("Updated pc to %h", regs::pc);
-          pc_upd = 1'b1;
-        end
-        OPCODE_JALR: begin
-          op_type = NONE;
-          regs::reg_page[rd]  <= regs::pc + 4;
-          regs::pc            <= (signed'(imm) + regs::reg_page[rs1]) & 32'hFFFFFFFE;
-        end
-        default: $display("Unknown %h opcode", opcode);// $error("Unknown %h opcode", opcode);
-      endcase
-    end
-  end
+  always_comb begin
+    op_type     = ADD;
+    instr_op1   = 32'd0;
+    instr_op2   = 32'd0;
+    out_we      = 1'b0;
+    jump        = 1'b0;
+    jump_target = 32'd0;
+    illegal     = 1'b0;
 
-  function void handle_jumps_opcode();
-  endfunction
-
-  function void handle_math_opcode();
-    case (funct3)
-      FUNCT3_MATH_BASIC: begin
-        case (funct7)
-          FUNCT7_MATH_BASIC_ADD: begin
-            op_type = ADD;
-            out_reg = rd;
-            instr_op1 = regs::reg_page[rs1];
-            instr_op2 = regs::reg_page[rs2];
-          end
-
-          FUNCT7_MATH_BASIC_SUB: begin
-            op_type = SUB;
-            out_reg = rd;
-            instr_op1 = regs::reg_page[rs1];
-            instr_op2 = regs::reg_page[rs2];
-          end
-          default: $error("Unknown funct7(%b) for opcode(%b) funct3(%b):: instr: %08h", funct7, opcode, funct3, instruction);
+    case (opcode)
+      OPCODE_MATH: begin
+        out_we    = 1'b1;
+        instr_op1 = rs1_val;
+        instr_op2 = rs2_val;
+        if      (funct3 == FUNCT3_MATH_BASIC && funct7 == FUNCT7_MATH_BASIC_ADD) op_type = ADD;
+        else if (funct3 == FUNCT3_MATH_BASIC && funct7 == FUNCT7_MATH_BASIC_SUB) op_type = SUB;
+        else illegal = 1'b1;
+      end
+      OPCODE_MATH_IMM: begin
+        out_we    = 1'b1;
+        instr_op1 = rs1_val;
+        instr_op2 = imm_i;
+        case (funct3)
+          FUNCT3_IMM_ADD: op_type = ADD;
+          default:        illegal = 1'b1;   // SLTI/XORI/... not implemented yet
         endcase
       end
-      default: $error("Unknown funct3(%b) for opcode(%b):: instr:%08h", funct7, opcode, instruction);
+      OPCODE_LUI: begin
+        out_we    = 1'b1;
+        instr_op1 = 32'd0;
+        instr_op2 = imm_u;
+      end
+      OPCODE_AUIPC: begin
+        out_we    = 1'b1;
+        instr_op1 = instruction_pc;
+        instr_op2 = imm_u;
+      end
+      OPCODE_JAL: begin
+        out_we      = 1'b1;               // rd = pc + 4, computed by the ALU
+        instr_op1   = instruction_pc;
+        instr_op2   = 32'd4;
+        jump        = 1'b1;
+        jump_target = instruction_pc + imm_j;
+      end
+      OPCODE_JALR: begin
+        if (funct3 != FUNCT3_JALR) illegal = 1'b1;
+        else begin
+          out_we      = 1'b1;
+          instr_op1   = instruction_pc;
+          instr_op2   = 32'd4;
+          jump        = 1'b1;
+          jump_target = (rs1_val + imm_i) & ~32'd1;
+        end
+      end
+      default: illegal = 1'b1;
     endcase
-  endfunction
 
-  function void handle_imm_math_opcode();
-    FUNCT3_IMM_ADD: begin
-      op_type = ADD;
-      out_reg = rd;
-      instr_op1 = regs::reg_page[rs1];
-      instr_op2 = 32'(signed'(imm));
+    if (illegal) begin
+      out_we = 1'b0;
+      jump   = 1'b0;
     end
-  endfunction
+    if (out_reg == regs::ZERO) out_we = 1'b0;   // x0 is never written or forwarded
+  end
 endmodule
