@@ -2,9 +2,15 @@
 
 In-order RV32I core in SystemVerilog, simulated with Verilator.
 
-Two pipeline stages on one clock edge: fetch/decode (jumps and branches are
-resolved here) and execute/memory/writeback, with forwarding between them.
-ECALL/EBREAK halt the core; a test passes when a0 is 0 at that point.
+Classic 5-stage pipeline: IF, ID, EX, MEM, WB.
+
+- Results are forwarded to EX from MEM and WB; ID bypasses the register
+  being written back in the same cycle.
+- A load followed by an instruction that uses its result stalls for one cycle.
+- Fetch predicts branches not taken; a taken branch or jump is resolved in EX
+  and squashes the two instructions behind it.
+- ECALL/EBREAK stop fetch and halt the core when they retire; a test passes
+  when a0 is 0 at that point.
 
 ## Requirements
 
