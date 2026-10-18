@@ -9,22 +9,29 @@ Classic 5-stage pipeline: IF, ID, EX, MEM, WB.
 - A load followed by an instruction that uses its result stalls for one cycle.
 - Fetch predicts branches not taken; a taken branch or jump is resolved in EX
   and squashes the two instructions behind it.
-- ECALL/EBREAK stop fetch and halt the core when they retire; a test passes
-  when a0 is 0 at that point.
+- ECALL/EBREAK halt the core when they retire (machine-mode traps are the next
+  step, see TODO.md).
+
+Tests report their result through a `tohost` word in memory, the riscv-tests
+convention: 1 = pass, `(failing test number << 1) | 1` = fail. The testbench
+watches that address; the Makefile reads it from the ELF.
 
 ## Requirements
 
 - Verilator 5
 - RISC-V GCC toolchain (`RISCV_PREFIX`, default `riscv64-linux-gnu-`)
-- riscv-tests submodule: `git submodule update --init third_party/riscv-tests`
+- riscv-tests submodule with its `env` submodule:
+  `git submodule update --init --recursive`
 
 ## Usage
 
     make simulate      # build test/test.S and run it with an instruction trace
     make riscv-tests   # run the official rv32ui and rv32um tests (fence_i excluded: Zifencei)
-    make               # both
+    make priv-tests    # machine-mode tests: rv32mi + test/priv/*.S (TODO.md step 1)
+    make               # simulate + riscv-tests
     make lint
     make dasm          # disassemble test/test.S
-    make simulate TEST=path/to/prog    # any program ending in ecall with a0 = 0
+    make simulate TEST=path/to/prog    # any program that defines and writes `tohost`
 
-Testbench plusargs: `+bin=<file>`, `+max_cycles=<n>`, `+trace`.
+Testbench plusargs: `+bin=<file>`, `+tohost=<hex address>`, `+max_cycles=<n>`,
+`+trace`.

@@ -222,8 +222,8 @@ jal_forward:
                             # x20 = 0x000003ff
 
     # ---------------------------------------------------------
-    # Self-check, then ECALL. a0 = 0 on pass, otherwise a0 is
-    # the number of the failed check. x17 is checked first and
+    # Self-check, reported through `tohost`: 1 on pass, otherwise
+    # (number of the failed check << 1) | 1. x17 is checked first and
     # then holds the check number; x21/x22 are checked to be
     # zero and then used as scratch.
     # ---------------------------------------------------------
@@ -302,11 +302,21 @@ test_done:
     lla  x21, .Lfar_target + 4
     expect x11, 31
 
-    li   a0, 0
-    ecall
+    li   x21, 1                     # tohost = 1: pass
+    sw   x21, tohost, x22
+1:  j    1b
 
 .Lfail_x17:
     li   x17, 1
 .Lfail:
-    mv   a0, x17
-    ecall
+    slli x17, x17, 1                # tohost = (check << 1) | 1: fail
+    ori  x17, x17, 1
+    sw   x17, tohost, x22
+1:  j    1b
+
+    # The testbench watches this word (address passed as +tohost=).
+    .section .tohost, "aw", @progbits
+    .align 6
+    .globl tohost
+tohost:
+    .word 0

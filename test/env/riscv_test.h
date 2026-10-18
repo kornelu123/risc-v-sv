@@ -1,6 +1,7 @@
 // Minimal riscv-tests environment for this core: bare machine, no CSRs or
-// traps. Tests start at address 0 and end with ECALL; a0 = 0 means pass,
-// otherwise a0 = (failing test number << 1) | 1.
+// traps needed. Tests start at address 0 and report through the `tohost`
+// word, like the official environment: 1 = pass, otherwise
+// (failing test number << 1) | 1. They never use ECALL to finish.
 #ifndef RISCV_SV_TEST_H
 #define RISCV_SV_TEST_H
 
@@ -21,17 +22,21 @@ _start: \
 #define RVTEST_PASS \
         fence; \
         li TESTNUM, 1; \
-        li a0, 0; \
-        ecall
+        sw TESTNUM, tohost, t5; \
+1:      j 1b
 
 #define RVTEST_FAIL \
         fence; \
         sll TESTNUM, TESTNUM, 1; \
         or TESTNUM, TESTNUM, 1; \
-        mv a0, TESTNUM; \
-        ecall
+        sw TESTNUM, tohost, t5; \
+1:      j 1b
 
 #define RVTEST_DATA_BEGIN \
+        .pushsection .tohost, "aw", @progbits; \
+        .align 6; .globl tohost; tohost: .dword 0; .size tohost, 8; \
+        .align 6; .globl fromhost; fromhost: .dword 0; .size fromhost, 8; \
+        .popsection; \
         .align 4; \
         .globl begin_signature; \
 begin_signature:
