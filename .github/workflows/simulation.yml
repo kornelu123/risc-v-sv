@@ -1,0 +1,39 @@
+name: Simulation
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  simulate:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Install Verilator and RISC-V toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            make g++ verilator gcc-riscv64-linux-gnu binutils-riscv64-linux-gnu
+          verilator --version
+          riscv64-linux-gnu-gcc --version | head -n 1
+
+      - name: Lint
+        run: make lint
+
+      - name: Simulate test/test.S
+        run: make simulate
+
+      - name: Run riscv-tests (rv32ui)
+        run: make riscv-tests
+
+      - name: Upload riscv-tests logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rv32ui-logs
+          path: build/rv32ui/*.log
+          if-no-files-found: ignore
