@@ -1,7 +1,8 @@
 // In-order 5-stage RV32I pipeline:
 //   IF   fetch at pc
 //   ID   decode, register read (same-cycle WB write bypassed), load-use check
-//   EX   ALU with operands forwarded from MEM/WB; branches and jumps resolved
+//   EX   ALU with operands forwarded from MEM/WB; branches and jumps resolved;
+//        DIV/REM run in a multi-cycle divider while EX, ID and IF stall
 //   MEM  data memory access; commit point for traps, MRET and CSR instructions
 //   WB   register write-back
 //
@@ -21,7 +22,10 @@
 // trapping instruction does not write rd or memory and does not retire.
 module cu import isa::*; (
   input  logic iclk,
-  input  logic rst_n
+  input  logic rst_n,
+  input  logic irq_software,   // machine software interrupt (mip.MSIP)
+  input  logic irq_timer,      // machine timer interrupt (mip.MTIP)
+  input  logic irq_external    // machine external interrupt (mip.MEIP)
 );
   bit trace_en;
   initial trace_en = $test$plusargs("trace");
@@ -51,6 +55,8 @@ module cu import isa::*; (
   // ---- EX ------------------------------------------------------------------
   bit [31:0]  ex_rs1_fwd, ex_rs2_fwd;
   bit [31:0]  ex_op1, ex_op2, ex_alu_result, ex_target;
+  bit         ex_is_div, div_done, div_stall;
+  bit [31:0]  div_result, ex_result;
   bit         ex_taken, ex_jump, ex_misaligned, ex_redirect;
   bit         ex_exc;
   bit [31:0]  ex_cause, ex_tval;
@@ -60,6 +66,7 @@ module cu import isa::*; (
   bit [31:0]  ma_pc, ma_instr;
   regs::reg_t ma_rd;
   bit         ma_rd_we, ma_mem_read, ma_mem_write, ma_csr, ma_mret;
+  bit         ma_fence_i, ma_lr, ma_sc, ma_amo;
   bit         ma_exc;          // exception found before MEM
   bit [31:0]  ma_cause, ma_tval;
   bit [2:0]   ma_funct3;
@@ -71,8 +78,18 @@ module cu import isa::*; (
   bit [31:0]  ma_csr_old;
   bit         ma_csr_write, csr_illegal;
   bit         ma_access_fault;
+  bit         ma_atomic_misaligned;
+  bit         resv_valid;      // LR.W reservation
+  bit [31:0]  resv_addr;
+  bit         sc_ok;           // SC.W in MEM finds its reservation
+  bit [31:0]  ma_mem_old;      // memory word an AMO reads
+  bit [31:0]  ma_amo_result;
+  bit         ma_do_store;     // MEM writes memory (failed SC.W does not)
+  bit [31:0]  ma_wdata;
   bit         trap, flush;
   bit [31:0]  trap_cause, trap_tval, flush_pc, mtvec, mepc;
+  bit         irq;             // an enabled interrupt is pending
+  bit [31:0]  irq_cause;
 
   // ---- MEM/WB --------------------------------------------------------------
   bit         wb_valid;
@@ -132,6 +149,29 @@ module cu import isa::*; (
         .op_type(ex_ctrl.alu_op),
         .res(ex_alu_result));
 
+  // Divisions run in the multi-cycle divider: EX holds the division (and
+  // IF/ID hold behind it) until the result is ready; MEM receives bubbles.
+  // The operands are latched when the division starts, so later changes in
+  // the forwarding sources do not matter. A flush can only squash a division
+  // in its first EX cycle (afterwards MEM holds only bubbles, so nothing can
+  // trap), which is why the divider is simply not started then.
+  assign ex_is_div = ex_valid && !ex_ctrl.illegal &&
+                     (ex_ctrl.alu_op == ALU_DIV || ex_ctrl.alu_op == ALU_DIVU ||
+                      ex_ctrl.alu_op == ALU_REM || ex_ctrl.alu_op == ALU_REMU);
+  assign div_stall = ex_is_div && !div_done;
+
+  divider div(.clk(iclk),
+              .rst_n(rst_n),
+              .start(ex_is_div && !flush),
+              .consume(ex_is_div && div_done),
+              .op(ex_ctrl.alu_op),
+              .a(ex_rs1_fwd),
+              .b(ex_rs2_fwd),
+              .done(div_done),
+              .result(div_result));
+
+  assign ex_result = ex_is_div ? div_result : ex_alu_result;
+
   always_comb begin
     case (ex_ctrl.funct3)
       FUNCT3_BEQ:  ex_taken = ex_rs1_fwd == ex_rs2_fwd;
@@ -177,6 +217,30 @@ module cu import isa::*; (
   assign ma_access_fault = (ma_mem_read || ma_mem_write) &&
                            !mem::access_ok(ma_alu_result, ma_funct3[1:0]);
 
+  // ---- A extension -----------------------------------------------------------
+  // AMOs read and write memory in the same MEM cycle (asynchronous read,
+  // write at the clock edge). Atomics must be naturally aligned.
+  assign ma_atomic_misaligned = (ma_lr || ma_sc || ma_amo) && ma_alu_result[1:0] != 2'b00;
+  assign sc_ok                = resv_valid && resv_addr == ma_alu_result;
+  assign ma_mem_old           = mem::word_at(ma_alu_result);
+
+  always_comb begin
+    case (ma_instr[31:27])
+      AMO_SWAP: ma_amo_result = ma_store_data;
+      AMO_ADD:  ma_amo_result = ma_mem_old + ma_store_data;
+      AMO_XOR:  ma_amo_result = ma_mem_old ^ ma_store_data;
+      AMO_AND:  ma_amo_result = ma_mem_old & ma_store_data;
+      AMO_OR:   ma_amo_result = ma_mem_old | ma_store_data;
+      AMO_MIN:  ma_amo_result = $signed(ma_mem_old) < $signed(ma_store_data) ? ma_mem_old : ma_store_data;
+      AMO_MAX:  ma_amo_result = $signed(ma_mem_old) > $signed(ma_store_data) ? ma_mem_old : ma_store_data;
+      AMO_MINU: ma_amo_result = ma_mem_old < ma_store_data ? ma_mem_old : ma_store_data;
+      default:  ma_amo_result = ma_mem_old > ma_store_data ? ma_mem_old : ma_store_data;  // MAXU
+    endcase
+  end
+
+  assign ma_do_store = ma_mem_write && (!ma_sc || sc_ok);
+  assign ma_wdata    = ma_amo ? ma_amo_result : ma_store_data;
+
   csr csrs(.clk(iclk),
            .rst_n(rst_n),
            .access(ma_valid && ma_csr && !ma_exc),
@@ -193,16 +257,28 @@ module cu import isa::*; (
            .trap_tval(trap_tval),
            .mret(ma_valid && ma_mret && !trap),
            .mtvec(mtvec),
-           .mepc(mepc));
+           .mepc(mepc),
+           .irq_software(irq_software),
+           .irq_timer(irq_timer),
+           .irq_external(irq_external),
+           .irq(irq),
+           .irq_cause(irq_cause));
 
-  // Trap decision for the instruction in MEM: earlier exceptions first, then
-  // the ones only MEM can detect.
+  // Trap decision for the instruction in MEM. An interrupt is taken on that
+  // instruction before it executes (mepc points at it, so it runs after
+  // MRET); then exceptions found earlier, then the ones only MEM can detect.
   always_comb begin
     trap       = ma_valid;
     trap_cause = ma_cause;
     trap_tval  = ma_tval;
-    if (ma_exc) begin
+    if (irq) begin
+      trap_cause = irq_cause;
+      trap_tval  = 32'd0;
+    end else if (ma_exc) begin
       // cause and tval from EX
+    end else if (ma_atomic_misaligned) begin
+      trap_cause = ma_lr ? CAUSE_MISALIGNED_LOAD : CAUSE_MISALIGNED_STORE;
+      trap_tval  = ma_alu_result;
     end else if (ma_access_fault) begin
       trap_cause = ma_mem_write ? CAUSE_STORE_ACCESS : CAUSE_LOAD_ACCESS;
       trap_tval  = ma_alu_result;
@@ -213,21 +289,23 @@ module cu import isa::*; (
       trap       = 1'b0;
     end
 
-    flush    = ma_valid && (trap || ma_mret || ma_csr);
+    flush    = ma_valid && (trap || ma_mret || ma_csr || ma_fence_i);
     flush_pc = trap ? mtvec : ma_mret ? mepc : ma_pc + 32'd4;
   end
 
-  assign ma_result = ma_mem_read ? mem::load(ma_alu_result, ma_funct3) :
+  assign ma_result = ma_sc       ? {31'd0, !sc_ok} :          // 0 = success
+                     ma_mem_read ? mem::load(ma_alu_result, ma_funct3) :
                      ma_csr      ? ma_csr_old : ma_alu_result;
 
   // ==== Pipeline registers ==================================================
   always_ff @(posedge iclk) begin
     if (!rst_n) begin
-      regs::pc <= 32'd0;
-      id_valid <= 1'b0;
-      ex_valid <= 1'b0;
-      ma_valid <= 1'b0;
-      wb_valid <= 1'b0;
+      regs::pc   <= 32'd0;
+      id_valid   <= 1'b0;
+      ex_valid   <= 1'b0;
+      ma_valid   <= 1'b0;
+      wb_valid   <= 1'b0;
+      resv_valid <= 1'b0;
     end else begin
       // ---- WB --------------------------------------------------------------
       if (wb_valid) begin
@@ -249,28 +327,38 @@ module cu import isa::*; (
         $display("(0x%08h) 0x%08h  trap mcause=%0d mtval=0x%08h", ma_pc, ma_instr,
                  trap_cause, trap_tval);
 
-      if (ma_valid && ma_mem_write && !trap) begin
-        mem::mem_pages[ma_alu_result] <= ma_store_data[7:0];
+      if (ma_valid && ma_do_store && !trap) begin
+        mem::mem_pages[ma_alu_result] <= ma_wdata[7:0];
         if (ma_funct3 != FUNCT3_SB)
-          mem::mem_pages[ma_alu_result + 1] <= ma_store_data[15:8];
+          mem::mem_pages[ma_alu_result + 1] <= ma_wdata[15:8];
         if (ma_funct3 == FUNCT3_SW) begin
-          mem::mem_pages[ma_alu_result + 2] <= ma_store_data[23:16];
-          mem::mem_pages[ma_alu_result + 3] <= ma_store_data[31:24];
+          mem::mem_pages[ma_alu_result + 2] <= ma_wdata[23:16];
+          mem::mem_pages[ma_alu_result + 3] <= ma_wdata[31:24];
         end
       end
+
+      // A trap (including an interrupt) drops the reservation; every SC.W
+      // consumes it, successful or not.
+      if (trap)
+        resv_valid <= 1'b0;
+      else if (ma_valid && ma_lr) begin
+        resv_valid <= 1'b1;
+        resv_addr  <= ma_alu_result;
+      end else if (ma_valid && ma_sc)
+        resv_valid <= 1'b0;
 
       wb_valid      <= ma_valid && !trap;
       wb_pc         <= ma_pc;
       wb_instr      <= ma_instr;
       wb_rd         <= ma_rd;
       wb_rd_we      <= ma_rd_we;
-      wb_store      <= ma_mem_write;
+      wb_store      <= ma_do_store;
       wb_result     <= ma_result;
       wb_store_addr <= ma_alu_result;
-      wb_store_data <= ma_store_data;
+      wb_store_data <= ma_wdata;
 
       // ---- EX -> MEM -------------------------------------------------------
-      ma_valid      <= ex_valid && !flush;
+      ma_valid      <= ex_valid && !flush && !div_stall;
       ma_pc         <= ex_pc;
       ma_instr      <= ex_instr;
       ma_rd         <= ex_ctrl.rd;
@@ -279,15 +367,21 @@ module cu import isa::*; (
       ma_mem_write  <= ex_ctrl.mem_write;
       ma_csr        <= ex_ctrl.csr;
       ma_mret       <= ex_ctrl.mret;
+      ma_fence_i    <= ex_ctrl.fence_i;
+      ma_lr         <= ex_ctrl.lr;
+      ma_sc         <= ex_ctrl.sc;
+      ma_amo        <= ex_ctrl.amo;
       ma_exc        <= ex_exc;
       ma_cause      <= ex_cause;
       ma_tval       <= ex_tval;
       ma_funct3     <= ex_ctrl.funct3;
-      ma_alu_result <= ex_alu_result;
+      ma_alu_result <= ex_result;
       ma_store_data <= ex_rs2_fwd;
 
-      // ---- ID -> EX: bubble on a squash or a load-use stall ----------------
-      if (flush || ex_redirect || load_use || !id_valid) begin
+      // ---- ID -> EX: bubble on squash / load-use, hold during a division -----
+      if (div_stall && !flush) begin
+        // hold EX
+      end else if (flush || ex_redirect || load_use || !id_valid) begin
         ex_valid <= 1'b0;
       end else begin
         ex_valid   <= 1'b1;
@@ -304,6 +398,8 @@ module cu import isa::*; (
       if (flush) begin
         regs::pc <= flush_pc;               // squash IF, ID and EX
         id_valid <= 1'b0;
+      end else if (div_stall) begin
+        // hold pc and IF/ID behind the division
       end else if (ex_redirect) begin
         regs::pc <= ex_target;              // squash IF and ID
         id_valid <= 1'b0;

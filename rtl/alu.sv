@@ -12,22 +12,11 @@ module alu import isa::*; (
   bit signed [65:0]   product;
   /* verilator lint_on UNUSEDSIGNAL */
 
-  // Signed quotient/remainder in their own signals: inside a ?: with unsigned
-  // operands, SystemVerilog would evaluate the division as unsigned.
-  bit signed [31:0]   quotient, remainder;
-
-  // Division never traps; the spec defines these results instead.
-  bit                 div_by_zero, div_overflow;
-
+  // DIV/DIVU/REM/REMU are done by the multi-cycle divider (divider.sv).
   assign op1_signed   = op_type == ALU_MULH || op_type == ALU_MULHSU;
   assign op2_signed   = op_type == ALU_MULH;
   assign product      = $signed({op1_signed & op1[31], op1}) *
                         $signed({op2_signed & op2[31], op2});
-
-  assign quotient     = $signed(op1) / $signed(op2);
-  assign remainder    = $signed(op1) % $signed(op2);
-  assign div_by_zero  = op2 == 32'd0;
-  assign div_overflow = op1 == 32'h80000000 && op2 == 32'hFFFFFFFF;
 
   always_comb begin
     case (op_type)
@@ -45,12 +34,6 @@ module alu import isa::*; (
       ALU_MULH,
       ALU_MULHSU,
       ALU_MULHU:  res = product[63:32];
-      ALU_DIV:    res = div_by_zero  ? 32'hFFFFFFFF :
-                        div_overflow ? op1 : quotient;
-      ALU_DIVU:   res = div_by_zero  ? 32'hFFFFFFFF : op1 / op2;
-      ALU_REM:    res = div_by_zero  ? op1 :
-                        div_overflow ? 32'd0 : remainder;
-      ALU_REMU:   res = div_by_zero  ? op1 : op1 % op2;
       default:    res = 32'd0;
     endcase
   end

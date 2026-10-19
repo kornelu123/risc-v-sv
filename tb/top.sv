@@ -3,6 +3,9 @@
 // convention): 1 = pass, otherwise (failing test number << 1) | 1.
 //   +bin=<file>         program image (default test/test.bin)
 //   +tohost=<hex>       address of `tohost` (the Makefile reads it from the ELF)
+//   +irq=<hex>          address of the program's `irq_lines` word, if any. Bits
+//                       3/7/11 drive the software/timer/external interrupt
+//                       inputs (mip layout), standing in for the CLINT/PLIC.
 //   +max_cycles=<n>     timeout (default 100000)
 //   +trace              print one line per retired instruction
 module t;
@@ -10,10 +13,27 @@ module t;
   logic      rst_n;
   string     bin_path;
   bit [31:0] tohost;
+  bit [31:0] irq_addr;
+  bit        irq_en;
+  bit        irq_sw, irq_tm, irq_ex;
   bit [31:0] result;
   int        max_cycles;
 
-  cu c(clk, rst_n);
+  cu c(.iclk(clk),
+       .rst_n(rst_n),
+       .irq_software(irq_sw),
+       .irq_timer(irq_tm),
+       .irq_external(irq_ex));
+
+  initial irq_en = $value$plusargs("irq=%h", irq_addr);
+
+  always @(negedge clk) begin
+    /* verilator lint_off UNUSEDSIGNAL */
+    bit [31:0] w;      // only bits 3/7/11 are interrupt lines
+    /* verilator lint_on UNUSEDSIGNAL */
+    w = irq_en ? mem::word_at(irq_addr) : 32'd0;
+    {irq_ex, irq_tm, irq_sw} <= {w[11], w[7], w[3]};
+  end
 
   initial begin
     clk = 1'b0;

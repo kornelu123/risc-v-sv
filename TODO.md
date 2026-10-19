@@ -20,6 +20,8 @@ Every step ends with a test that must pass in `make` and CI.
 - [x] riscv-tests `rv32ui` + `rv32um` in `make riscv-tests` and GitHub Actions
 - [x] Machine mode (step 1 below): `rv32mi` + `test/priv` in `make priv-tests`
       and GitHub Actions
+- [x] A, Zifencei, interrupts, multi-cycle divider (step 2 below): `rv32ua`,
+      `rv32ui/fence_i`, `test/isa`, `test/priv/interrupts.S`
 
 ## 1. Core: privileged basics (M-mode)
 
@@ -47,15 +49,22 @@ Every step ends with a test that must pass in `make` and CI.
 
 ## 2. Core: remaining Linux ISA requirements
 
-- [ ] **A extension**: `lr.w/sc.w` (reservation valid bit + address; cleared on
-      trap/`sc`) and `amo*.w` (read-modify-write in MEM, one extra cycle).
+- [x] **A extension**: `lr.w/sc.w` (reservation valid bit + address; cleared on
+      trap/`sc`) and `amo*.w` (read-modify-write in MEM; a single cycle with
+      the asynchronous memory model, more with block RAM).
       Acceptance: `rv32ua`.
-- [ ] **Zifencei**: `fence.i` flushes the pipeline and refetches.
-      Acceptance: drop the `rv32ui/fence_i` exclusion in the Makefile.
-- [ ] **Interrupts**: timer, software and external interrupts via `mie/mip`,
-      taken at the commit stage like exceptions.
-- [ ] Iterative divider with an EX stall instead of combinational `/` and `%`
+- [x] **Zifencei**: `fence.i` flushes the pipeline and refetches.
+      Acceptance: `rv32ui/fence_i`, `test/isa/fence_i.S` (stale instructions
+      already in the pipeline).
+- [x] **Interrupts**: timer, software and external interrupts via `mie/mip`,
+      taken at the commit stage like exceptions. The inputs come from the
+      testbench (`irq_lines`) until the CLINT/PLIC in step 3.
+      Acceptance: `test/priv/interrupts.S`.
+- [x] Iterative divider with an EX stall instead of combinational `/` and `%`
       (needed for FPGA timing, not for correctness).
+      Acceptance: `rv32um`, `test/isa/div_hazards.S`.
+- [ ] `wfi` is a no-op; stalling until an interrupt is pending would save
+      power on hardware.
 
 ## 3. SoC: memory and devices
 

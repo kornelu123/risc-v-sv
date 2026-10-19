@@ -12,6 +12,7 @@ package isa;
   localparam bit [6:0] OPCODE_OP       = 7'b0110011;
   localparam bit [6:0] OPCODE_MISC_MEM = 7'b0001111;
   localparam bit [6:0] OPCODE_SYSTEM   = 7'b1110011;
+  localparam bit [6:0] OPCODE_AMO      = 7'b0101111;
 
   // OP / OP-IMM funct3
   localparam bit [2:0] FUNCT3_ADD_SUB  = 3'b000;
@@ -49,6 +50,22 @@ package isa;
   // JALR / MISC-MEM funct3
   localparam bit [2:0] FUNCT3_JALR     = 3'b000;
   localparam bit [2:0] FUNCT3_FENCE    = 3'b000;
+  localparam bit [2:0] FUNCT3_FENCE_I  = 3'b001;   // Zifencei
+
+  // A extension (word only): funct3 = 010, operation in funct5 = instr[31:27];
+  // the aq/rl bits need no action on a single in-order hart.
+  localparam bit [2:0] FUNCT3_AMO_W    = 3'b010;
+  localparam bit [4:0] AMO_LR          = 5'b00010;
+  localparam bit [4:0] AMO_SC          = 5'b00011;
+  localparam bit [4:0] AMO_SWAP        = 5'b00001;
+  localparam bit [4:0] AMO_ADD         = 5'b00000;
+  localparam bit [4:0] AMO_XOR         = 5'b00100;
+  localparam bit [4:0] AMO_AND         = 5'b01100;
+  localparam bit [4:0] AMO_OR          = 5'b01000;
+  localparam bit [4:0] AMO_MIN         = 5'b10000;
+  localparam bit [4:0] AMO_MAX         = 5'b10100;
+  localparam bit [4:0] AMO_MINU        = 5'b11000;
+  localparam bit [4:0] AMO_MAXU        = 5'b11100;
 
   // SYSTEM with funct3 = 000
   localparam bit [2:0]  FUNCT3_PRIV    = 3'b000;
@@ -61,7 +78,9 @@ package isa;
   localparam bit [31:0] CAUSE_MISALIGNED_FETCH = 32'd0;
   localparam bit [31:0] CAUSE_ILLEGAL_INSTR    = 32'd2;
   localparam bit [31:0] CAUSE_BREAKPOINT       = 32'd3;
+  localparam bit [31:0] CAUSE_MISALIGNED_LOAD  = 32'd4;
   localparam bit [31:0] CAUSE_LOAD_ACCESS      = 32'd5;
+  localparam bit [31:0] CAUSE_MISALIGNED_STORE = 32'd6;   // also AMO
   localparam bit [31:0] CAUSE_STORE_ACCESS     = 32'd7;
   localparam bit [31:0] CAUSE_ECALL_M          = 32'd11;
 
@@ -109,7 +128,7 @@ package isa;
   localparam bit [11:0] CSR_MIMPID    = 12'hF13;
   localparam bit [11:0] CSR_MHARTID   = 12'hF14;
 
-  localparam bit [31:0] MISA_VALUE    = 32'h40001100;  // MXL=1 (RV32), I, M
+  localparam bit [31:0] MISA_VALUE    = 32'h40001101;  // MXL=1 (RV32), A, I, M
   localparam bit [31:0] MIE_MASK      = 32'h00000888;  // MSIE, MTIE, MEIE
 
   typedef enum bit [4:0] {
@@ -140,6 +159,10 @@ package isa;
     bit            ebreak;
     bit            mret;
     bit            csr;        // Zicsr; the ALU result is the CSR write operand
+    bit            fence_i;    // flush and refetch after older stores
+    bit            lr;         // LR.W: load and set the reservation
+    bit            sc;         // SC.W: store if the reservation holds
+    bit            amo;        // AMO*.W: read-modify-write in MEM
     bit            illegal;
   } ctrl_t;
 endpackage

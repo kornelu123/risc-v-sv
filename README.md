@@ -1,6 +1,7 @@
 # risc-v-sv
 
-In-order RV32I core in SystemVerilog, simulated with Verilator.
+In-order RV32IMA (+ Zicsr, Zicntr, Zifencei) core in SystemVerilog, simulated
+with Verilator.
 
 Classic 5-stage pipeline: IF, ID, EX, MEM, WB.
 
@@ -9,10 +10,17 @@ Classic 5-stage pipeline: IF, ID, EX, MEM, WB.
 - A load followed by an instruction that uses its result stalls for one cycle.
 - Fetch predicts branches not taken; a taken branch or jump is resolved in EX
   and squashes the two instructions behind it.
+- Multiplication is single-cycle; DIV/REM use a 34-cycle iterative divider
+  (`rtl/divider.sv`) while IF/ID/EX stall.
+- Atomics (LR/SC with a one-address reservation, AMO read-modify-write) run in
+  MEM. FENCE.I flushes and refetches.
 - Machine mode only, with precise traps: exceptions (illegal instruction,
-  ECALL, EBREAK, misaligned jump target, load/store access fault), MRET and
-  CSR instructions take effect in MEM and squash everything younger. The CSRs
-  are in `rtl/csr.sv`. No interrupts yet.
+  ECALL, EBREAK, misaligned jump target, misaligned atomic, load/store access
+  fault), interrupts, MRET, FENCE.I and CSR instructions take effect in MEM and
+  squash everything younger. The CSRs are in `rtl/csr.sv`.
+- Interrupts: machine software/timer/external inputs (`mip` bits 3/7/11),
+  priority external > software > timer. The testbench drives them from a
+  program's `irq_lines` word until a CLINT/PLIC exists.
 
 Tests report their result through a `tohost` word in memory, the riscv-tests
 convention: 1 = pass, `(failing test number << 1) | 1` = fail. The testbench
@@ -28,12 +36,12 @@ watches that address; the Makefile reads it from the ELF.
 ## Usage
 
     make simulate      # build test/test.S and run it with an instruction trace
-    make riscv-tests   # run the official rv32ui and rv32um tests (fence_i excluded: Zifencei)
+    make riscv-tests   # rv32ui, rv32um, rv32ua + test/isa/*.S
     make priv-tests    # machine-mode tests: rv32mi + test/priv/*.S (TODO.md step 1)
     make               # simulate + riscv-tests + priv-tests
     make lint
     make dasm          # disassemble test/test.S
     make simulate TEST=path/to/prog    # any program that defines and writes `tohost`
 
-Testbench plusargs: `+bin=<file>`, `+tohost=<hex address>`, `+max_cycles=<n>`,
-`+trace`.
+Testbench plusargs: `+bin=<file>`, `+tohost=<hex address>`, `+irq=<hex address>`,
+`+max_cycles=<n>`, `+trace`.

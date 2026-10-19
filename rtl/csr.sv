@@ -17,8 +17,15 @@ module csr import isa::*; (
   input  bit [31:0]  trap_tval,
   input  bit         mret,
   output bit [31:0]  mtvec,
-  output bit [31:0]  mepc
+  output bit [31:0]  mepc,
+
+  input  bit         irq_software,
+  input  bit         irq_timer,
+  input  bit         irq_external,
+  output bit         irq,         // an enabled interrupt is pending and MIE = 1
+  output bit [31:0]  irq_cause
 );
+  bit [31:0] mip, pending;
   bit        mstatus_mie, mstatus_mpie;
   bit [31:0] mie, mscratch, mcause, mtval;
   bit [63:0] mcycle, minstret;
@@ -39,7 +46,7 @@ module csr import isa::*; (
       CSR_MEPC:      rdata = mepc;
       CSR_MCAUSE:    rdata = mcause;
       CSR_MTVAL:     rdata = mtval;
-      CSR_MIP:       rdata = 32'd0;
+      CSR_MIP:       rdata = mip;
       CSR_MCYCLE,
       CSR_CYCLE,
       CSR_TIME:      rdata = mcycle[31:0];
@@ -67,6 +74,18 @@ module csr import isa::*; (
       FUNCT3_CSRRC[1:0]: wdata = rdata & ~src;
       default:           wdata = src;
     endcase
+  end
+
+  // mip's machine bits mirror the interrupt inputs (read-only).
+  assign mip     = {20'd0, irq_external, 3'd0, irq_timer, 3'd0, irq_software, 3'd0};
+  assign pending = mip & mie;
+  assign irq     = mstatus_mie && pending != 32'd0;
+
+  // Priority: external > software > timer.
+  always_comb begin
+    if      (pending[11]) irq_cause = 32'h8000000B;
+    else if (pending[3])  irq_cause = 32'h80000003;
+    else                  irq_cause = 32'h80000007;
   end
 
   assign do_write = access && write && !illegal;

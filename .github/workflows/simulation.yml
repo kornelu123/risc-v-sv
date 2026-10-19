@@ -27,7 +27,7 @@ jobs:
       - name: Simulate test/test.S
         run: make simulate
 
-      - name: Run riscv-tests (rv32ui, rv32um)
+      - name: Run riscv-tests (rv32ui, rv32um, rv32ua, test/isa)
         run: make riscv-tests
 
       - name: Run machine-mode tests (rv32mi, test/priv)
@@ -42,4 +42,5 @@ jobs:
             build/isa/**/*.log
             build/isa-p/**/*.log
             build/test/priv/*.log
+            build/test/isa/*.log
           if-no-files-found: ignore
