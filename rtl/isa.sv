@@ -64,6 +64,43 @@ package isa;
   localparam bit [2:0] FUNCT3_REM     = 3'b110;
   localparam bit [2:0] FUNCT3_REMU    = 3'b111;
 
+  // Zicsr funct3; funct3[2] selects the immediate (zimm) form
+  localparam bit [2:0] FUNCT3_CSRRW   = 3'b001;
+  localparam bit [2:0] FUNCT3_CSRRS   = 3'b010;
+  localparam bit [2:0] FUNCT3_CSRRC   = 3'b011;
+  localparam bit [2:0] FUNCT3_CSRRWI  = 3'b101;
+  localparam bit [2:0] FUNCT3_CSRRSI  = 3'b110;
+  localparam bit [2:0] FUNCT3_CSRRCI  = 3'b111;
+
+  // CSR addresses. addr[11:10] == 2'b11 marks a read-only CSR.
+  localparam bit [11:0] CSR_MSTATUS   = 12'h300;
+  localparam bit [11:0] CSR_MISA      = 12'h301;
+  localparam bit [11:0] CSR_MIE       = 12'h304;
+  localparam bit [11:0] CSR_MTVEC     = 12'h305;
+  localparam bit [11:0] CSR_MSTATUSH  = 12'h310;
+  localparam bit [11:0] CSR_MSCRATCH  = 12'h340;
+  localparam bit [11:0] CSR_MEPC      = 12'h341;
+  localparam bit [11:0] CSR_MCAUSE    = 12'h342;
+  localparam bit [11:0] CSR_MTVAL     = 12'h343;
+  localparam bit [11:0] CSR_MIP       = 12'h344;
+  localparam bit [11:0] CSR_MCYCLE    = 12'hB00;
+  localparam bit [11:0] CSR_MINSTRET  = 12'hB02;
+  localparam bit [11:0] CSR_MCYCLEH   = 12'hB80;
+  localparam bit [11:0] CSR_MINSTRETH = 12'hB82;
+  localparam bit [11:0] CSR_CYCLE     = 12'hC00;
+  localparam bit [11:0] CSR_TIME      = 12'hC01;
+  localparam bit [11:0] CSR_INSTRET   = 12'hC02;
+  localparam bit [11:0] CSR_CYCLEH    = 12'hC80;
+  localparam bit [11:0] CSR_TIMEH     = 12'hC81;
+  localparam bit [11:0] CSR_INSTRETH  = 12'hC82;
+  localparam bit [11:0] CSR_MVENDORID = 12'hF11;
+  localparam bit [11:0] CSR_MARCHID   = 12'hF12;
+  localparam bit [11:0] CSR_MIMPID    = 12'hF13;
+  localparam bit [11:0] CSR_MHARTID   = 12'hF14;
+
+  localparam bit [31:0] MISA_VALUE    = 32'h40001100;  // MXL=1 (RV32), I, M
+  localparam bit [31:0] MIE_MASK      = 32'h00000888;  // MSIE, MTIE, MEIE
+
   typedef enum bit [4:0] {
     ALU_ADD, ALU_SUB, ALU_SLL, ALU_SLT, ALU_SLTU,
     ALU_XOR, ALU_SRL, ALU_SRA, ALU_OR,  ALU_AND,
@@ -89,6 +126,7 @@ package isa;
     bit            jal;
     bit            jalr;
     bit            halt;       // ECALL / EBREAK
+    bit            csr;        // Zicsr; the ALU result is the CSR write operand
     bit            illegal;
   } ctrl_t;
 endpackage

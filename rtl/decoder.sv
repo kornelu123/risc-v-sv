@@ -172,7 +172,22 @@ module decoder import isa::*; (
 
       OPCODE_SYSTEM: begin
         if (instruction == INSTR_ECALL || instruction == INSTR_EBREAK) ctrl.halt = 1'b1;
-        else ctrl.illegal = 1'b1;
+        else begin
+          case (funct3)
+            // Decode only; the CSR is read and written in MEM (control_unit).
+            // The ALU produces the write operand: rs1 + 0, or 0 + zimm.
+            FUNCT3_CSRRW, FUNCT3_CSRRS, FUNCT3_CSRRC,
+            FUNCT3_CSRRWI, FUNCT3_CSRRSI, FUNCT3_CSRRCI: begin
+              ctrl.csr     = 1'b1;
+              ctrl.rd_we   = 1'b1;
+              ctrl.op1_sel = funct3[2] ? OP1_ZERO : OP1_RS1;
+              ctrl.op2_sel = OP2_IMM;
+              ctrl.imm     = funct3[2] ? {27'd0, instruction[19:15]} : 32'd0;
+              uses_rs1     = !funct3[2];
+            end
+            default: ctrl.illegal = 1'b1;
+          endcase
+        end
       end
 
       default: ctrl.illegal = 1'b1;
@@ -186,6 +201,7 @@ module decoder import isa::*; (
       ctrl.jal       = 1'b0;
       ctrl.jalr      = 1'b0;
       ctrl.halt      = 1'b0;
+      ctrl.csr       = 1'b0;
       uses_rs1       = 1'b0;
       uses_rs2       = 1'b0;
     end

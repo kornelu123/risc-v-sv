@@ -12,6 +12,9 @@
 //     redirects pc and squashes the two younger instructions in IF and ID.
 //   - ECALL/EBREAK: fetch stops once it leaves ID; the core halts when it
 //     reaches WB, after every older instruction has completed.
+//   - CSR instructions read and write the CSR in MEM, then squash EX/ID/IF
+//     and refetch the next instruction, so nothing younger runs with stale
+//     CSR state (MEM->EX forwarding only carries the ALU result).
 // Illegal instructions and misaligned jump targets are reported in EX, where
 // an instruction can no longer be squashed.
 module cu import isa::*; (
@@ -55,13 +58,15 @@ module cu import isa::*; (
   bit         ma_valid;
   bit [31:0]  ma_pc, ma_instr;
   regs::reg_t ma_rd;
-  bit         ma_rd_we, ma_mem_read, ma_mem_write, ma_halt;
+  bit         ma_rd_we, ma_mem_read, ma_mem_write, ma_halt, ma_csr;
   bit [2:0]   ma_funct3;
   bit [31:0]  ma_alu_result;   // also the load/store address
   bit [31:0]  ma_store_data;
 
   // ---- MEM -----------------------------------------------------------------
-  bit [31:0]  ma_result;       // value for rd: load data or ALU result
+  bit [31:0]  ma_result;       // value for rd: load data, CSR value or ALU result
+  bit [31:0]  ma_csr_old;
+  bit         ma_csr_write, csr_flush, csr_illegal;
 
   // ---- MEM/WB --------------------------------------------------------------
   bit         wb_valid;
@@ -137,7 +142,24 @@ module cu import isa::*; (
   end
 
   // ==== MEM =================================================================
-  assign ma_result = ma_mem_read ? mem::load(ma_alu_result, ma_funct3) : ma_alu_result;
+  // CSR: the ALU result (ma_alu_result) is the write operand. CSRRW* always
+  // write; CSRRS*/CSRRC* only write if the rs1/zimm field is not zero.
+  assign ma_csr_write = ma_funct3[1:0] == FUNCT3_CSRRW[1:0] || ma_instr[19:15] != 5'd0;
+  assign csr_flush    = ma_valid && ma_csr;
+
+  csr csrs(.clk(iclk),
+           .rst_n(rst_n),
+           .access(csr_flush),
+           .addr(ma_instr[31:20]),
+           .op(ma_funct3[1:0]),
+           .src(ma_alu_result),
+           .write(ma_csr_write),
+           .retire(ma_valid),
+           .rdata(ma_csr_old),
+           .illegal(csr_illegal));
+
+  assign ma_result = ma_mem_read ? mem::load(ma_alu_result, ma_funct3) :
+                     ma_csr      ? ma_csr_old : ma_alu_result;
 
   // ==== Pipeline registers ==================================================
   always_ff @(posedge iclk) begin
@@ -184,6 +206,10 @@ module cu import isa::*; (
         end
       end
 
+      // Becomes an illegal-instruction trap in step 4.
+      if (csr_flush && csr_illegal)
+        $fatal(1, "Illegal CSR 0x%03h access at pc 0x%08h", ma_instr[31:20], ma_pc);
+
       wb_valid      <= ma_valid;
       wb_pc         <= ma_pc;
       wb_instr      <= ma_instr;
@@ -201,7 +227,7 @@ module cu import isa::*; (
       if (ex_redirect && ex_target[1:0] != 2'b00)
         $fatal(1, "Misaligned jump target 0x%08h at pc 0x%08h", ex_target, ex_pc);
 
-      ma_valid      <= ex_valid;
+      ma_valid      <= ex_valid && !csr_flush;
       ma_pc         <= ex_pc;
       ma_instr      <= ex_instr;
       ma_rd         <= ex_ctrl.rd;
@@ -209,12 +235,13 @@ module cu import isa::*; (
       ma_mem_read   <= ex_ctrl.mem_read;
       ma_mem_write  <= ex_ctrl.mem_write;
       ma_halt       <= ex_ctrl.halt;
+      ma_csr        <= ex_ctrl.csr;
       ma_funct3     <= ex_ctrl.funct3;
       ma_alu_result <= ex_alu_result;
       ma_store_data <= ex_rs2_fwd;
 
       // ---- ID -> EX: bubble on a squash or a load-use stall ----------------
-      if (ex_redirect || load_use || !id_valid) begin
+      if (csr_flush || ex_redirect || load_use || !id_valid) begin
         ex_valid <= 1'b0;
       end else begin
         ex_valid   <= 1'b1;
@@ -228,7 +255,11 @@ module cu import isa::*; (
       end
 
       // ---- IF -> ID and next pc --------------------------------------------
-      if (ex_redirect) begin
+      if (csr_flush) begin
+        regs::pc <= ma_pc + 32'd4;          // squash IF, ID and EX; refetch
+        id_valid <= 1'b0;
+        halting  <= 1'b0;                   // a squashed ECALL is fetched again
+      end else if (ex_redirect) begin
         regs::pc <= ex_target;              // squash IF and ID
         id_valid <= 1'b0;
       end else if (load_use) begin
