@@ -13,6 +13,11 @@ SECTIONS
     *(.rodata .rodata.* .srodata .srodata.*)
   }
 
+  /* Word the testbench watches to learn the test result. */
+  .tohost : {
+    *(.tohost)
+  }
+
   .data : {
     *(.data .data.* .sdata .sdata.*)
   }
