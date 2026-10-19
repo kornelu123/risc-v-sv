@@ -9,10 +9,18 @@ module csr import isa::*; (
   input  bit         write,
   input  bit         retire,
   output bit [31:0]  rdata,
-  output bit         illegal
+  output bit         illegal,
+
+  input  bit         trap,
+  input  bit [31:0]  trap_pc,
+  input  bit [31:0]  trap_cause,
+  input  bit [31:0]  trap_tval,
+  input  bit         mret,
+  output bit [31:0]  mtvec,
+  output bit [31:0]  mepc
 );
   bit        mstatus_mie, mstatus_mpie;
-  bit [31:0] mie, mtvec, mscratch, mepc, mcause, mtval;
+  bit [31:0] mie, mscratch, mcause, mtval;
   bit [63:0] mcycle, minstret;
 
   bit        known;
@@ -79,7 +87,16 @@ module csr import isa::*; (
       mcycle <= mcycle + 64'd1;
       if (retire) minstret <= minstret + 64'd1;
 
-      if (do_write) begin
+      if (trap) begin
+        mepc         <= trap_pc;
+        mcause       <= trap_cause;
+        mtval        <= trap_tval;
+        mstatus_mpie <= mstatus_mie;
+        mstatus_mie  <= 1'b0;
+      end else if (mret) begin
+        mstatus_mie  <= mstatus_mpie;
+        mstatus_mpie <= 1'b1;
+      end else if (do_write) begin
         case (addr)
           CSR_MSTATUS: begin
             mstatus_mie  <= wdata[3];

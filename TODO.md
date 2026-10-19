@@ -18,27 +18,32 @@ Every step ends with a test that must pass in `make` and CI.
 - [x] RV32I, 5-stage pipeline with forwarding, load-use stall, branch flush
 - [x] M extension (`rv32um`)
 - [x] riscv-tests `rv32ui` + `rv32um` in `make riscv-tests` and GitHub Actions
+- [x] Machine mode (step 1 below): `rv32mi` + `test/priv` in `make priv-tests`
+      and GitHub Actions
 
 ## 1. Core: privileged basics (M-mode)
 
-- [ ] **Zicsr**: CSR register file and `csrrw/csrrs/csrrc[i]`. Execute CSR
+- [x] **Zicsr**: CSR register file and `csrrw/csrrs/csrrc[i]`. Execute CSR
       instructions at one stage and flush younger instructions after CSR writes.
-- [ ] **Precise traps**: carry an exception flag + cause down the pipeline,
+- [x] **Precise traps**: carry an exception flag + cause down the pipeline,
       take it at one commit stage, squash younger instructions, write
       `mepc/mcause/mtval`, jump to `mtvec`; `mret`.
       Causes: illegal instruction, `ecall`, `ebreak`, misaligned fetch,
       load/store access faults. (`$fatal` in `rtl/control_unit.sv` goes away.)
-- [ ] **M-mode CSRs**: `mstatus` (MIE/MPIE/MPP), `misa`, `mhartid`,
+- [x] **M-mode CSRs**: `mstatus` (MIE/MPIE/MPP), `misa`, `mhartid`,
       `mvendorid/marchid/mimpid` (0), `mtvec`, `mscratch`, `mepc`, `mcause`,
       `mtval`, `mie`, `mip`.
-- [ ] `wfi` (may be a no-op).
-- [ ] **Zicntr**: `cycle/time/instret` (+ `cycleh/timeh/instreth` on RV32).
+- [x] `wfi` (a no-op until interrupts exist).
+- [x] **Zicntr**: `cycle/time/instret` (+ `cycleh/timeh/instreth` on RV32).
+      `time` mirrors `mcycle` until the CLINT (step 3) provides `mtime`.
+- [ ] `mhpmcounter3–31`, `mhpmevent3–31`, `mconfigptr`: the privileged spec
+      expects them (may be hard-wired to 0); they currently trap.
 - [x] **Test infra**: tests end by writing `tohost` (testbench watches it), so
       `ecall` is free to become a real trap. `make priv-tests` builds `rv32mi`
       with the official riscv-tests `p` environment, plus `test/priv/mmode.S`
       for what `rv32mi` does not check on an M-only hart.
-      Acceptance: `rv32ui`, `rv32um` still pass; `make priv-tests` passes
-      (then add it to CI).
+      Acceptance: `rv32ui`, `rv32um` still pass; `make priv-tests` passes and
+      runs in CI.
 
 ## 2. Core: remaining Linux ISA requirements
 

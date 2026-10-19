@@ -2,7 +2,7 @@
 //   IF   fetch at pc
 //   ID   decode, register read (same-cycle WB write bypassed), load-use check
 //   EX   ALU with operands forwarded from MEM/WB; branches and jumps resolved
-//   MEM  data memory access
+//   MEM  data memory access; commit point for traps, MRET and CSR instructions
 //   WB   register write-back
 //
 // Hazards:
@@ -10,22 +10,21 @@
 //     followed by a dependent instruction stalls IF/ID for one cycle.
 //   - Control: fetch predicts not taken. A taken branch or jump in EX
 //     redirects pc and squashes the two younger instructions in IF and ID.
-//   - ECALL/EBREAK: fetch stops once it leaves ID; the core halts when it
-//     reaches WB, after every older instruction has completed.
-//   - CSR instructions read and write the CSR in MEM, then squash EX/ID/IF
-//     and refetch the next instruction, so nothing younger runs with stale
-//     CSR state (MEM->EX forwarding only carries the ALU result).
-// Illegal instructions and misaligned jump targets are reported in EX, where
-// an instruction can no longer be squashed.
+//   - Traps, MRET and CSR instructions take effect in MEM: everything older
+//     has completed, everything younger (EX/ID/IF) is squashed and fetch
+//     restarts at mtvec, mepc or the next instruction. CSR instructions
+//     flush so nothing younger runs with stale CSR state (MEM->EX forwarding
+//     only carries the ALU result).
+//
+// Exceptions found before MEM (illegal instruction, ECALL, EBREAK, jump to a
+// misaligned target) travel down the pipeline with their instruction. A
+// trapping instruction does not write rd or memory and does not retire.
 module cu import isa::*; (
   input  logic iclk,
   input  logic rst_n
 );
   bit trace_en;
   initial trace_en = $test$plusargs("trace");
-
-  bit halting;   // ECALL/EBREAK has left ID; fetch is stopped
-  bit halted;    // ECALL/EBREAK has retired; the core is frozen
 
   // ---- IF ------------------------------------------------------------------
   bit [31:0] if_instr;
@@ -52,13 +51,17 @@ module cu import isa::*; (
   // ---- EX ------------------------------------------------------------------
   bit [31:0]  ex_rs1_fwd, ex_rs2_fwd;
   bit [31:0]  ex_op1, ex_op2, ex_alu_result, ex_target;
-  bit         ex_taken, ex_redirect;
+  bit         ex_taken, ex_jump, ex_misaligned, ex_redirect;
+  bit         ex_exc;
+  bit [31:0]  ex_cause, ex_tval;
 
   // ---- EX/MEM --------------------------------------------------------------
   bit         ma_valid;
   bit [31:0]  ma_pc, ma_instr;
   regs::reg_t ma_rd;
-  bit         ma_rd_we, ma_mem_read, ma_mem_write, ma_halt, ma_csr;
+  bit         ma_rd_we, ma_mem_read, ma_mem_write, ma_csr, ma_mret;
+  bit         ma_exc;          // exception found before MEM
+  bit [31:0]  ma_cause, ma_tval;
   bit [2:0]   ma_funct3;
   bit [31:0]  ma_alu_result;   // also the load/store address
   bit [31:0]  ma_store_data;
@@ -66,13 +69,16 @@ module cu import isa::*; (
   // ---- MEM -----------------------------------------------------------------
   bit [31:0]  ma_result;       // value for rd: load data, CSR value or ALU result
   bit [31:0]  ma_csr_old;
-  bit         ma_csr_write, csr_flush, csr_illegal;
+  bit         ma_csr_write, csr_illegal;
+  bit         ma_access_fault;
+  bit         trap, flush;
+  bit [31:0]  trap_cause, trap_tval, flush_pc, mtvec, mepc;
 
   // ---- MEM/WB --------------------------------------------------------------
   bit         wb_valid;
   bit [31:0]  wb_pc, wb_instr;
   regs::reg_t wb_rd;
-  bit         wb_rd_we, wb_halt, wb_store;
+  bit         wb_rd_we, wb_store;
   bit [31:0]  wb_result, wb_store_addr, wb_store_data;
 
   // ==== ID ==================================================================
@@ -136,27 +142,80 @@ module cu import isa::*; (
       FUNCT3_BGEU: ex_taken = ex_rs1_fwd >= ex_rs2_fwd;
       default:     ex_taken = 1'b0;
     endcase
-    ex_target   = ex_ctrl.jalr ? (ex_rs1_fwd + ex_ctrl.imm) & ~32'd1
-                               : ex_pc + ex_ctrl.imm;
-    ex_redirect = ex_valid && (ex_ctrl.jal || ex_ctrl.jalr || (ex_ctrl.branch && ex_taken));
+    ex_target     = ex_ctrl.jalr ? (ex_rs1_fwd + ex_ctrl.imm) & ~32'd1
+                                 : ex_pc + ex_ctrl.imm;
+    ex_jump       = ex_valid && (ex_ctrl.jal || ex_ctrl.jalr || (ex_ctrl.branch && ex_taken));
+    // A jump to a misaligned target traps on the jump itself: no redirect,
+    // and (because it traps) no rd write.
+    ex_misaligned = ex_jump && ex_target[1:0] != 2'b00;
+    ex_redirect   = ex_jump && !ex_misaligned;
+
+    // At most one exception per instruction, in priority order.
+    ex_exc   = 1'b1;
+    ex_cause = 32'd0;
+    ex_tval  = 32'd0;
+    if (ex_ctrl.illegal) begin
+      ex_cause = CAUSE_ILLEGAL_INSTR;
+      ex_tval  = ex_instr;
+    end else if (ex_ctrl.ecall) begin
+      ex_cause = CAUSE_ECALL_M;
+    end else if (ex_ctrl.ebreak) begin
+      ex_cause = CAUSE_BREAKPOINT;
+    end else if (ex_misaligned) begin
+      ex_cause = CAUSE_MISALIGNED_FETCH;
+      ex_tval  = ex_target;
+    end else begin
+      ex_exc   = 1'b0;
+    end
   end
 
   // ==== MEM =================================================================
   // CSR: the ALU result (ma_alu_result) is the write operand. CSRRW* always
   // write; CSRRS*/CSRRC* only write if the rs1/zimm field is not zero.
   assign ma_csr_write = ma_funct3[1:0] == FUNCT3_CSRRW[1:0] || ma_instr[19:15] != 5'd0;
-  assign csr_flush    = ma_valid && ma_csr;
+
+  assign ma_access_fault = (ma_mem_read || ma_mem_write) &&
+                           !mem::access_ok(ma_alu_result, ma_funct3[1:0]);
 
   csr csrs(.clk(iclk),
            .rst_n(rst_n),
-           .access(csr_flush),
+           .access(ma_valid && ma_csr && !ma_exc),
            .addr(ma_instr[31:20]),
            .op(ma_funct3[1:0]),
            .src(ma_alu_result),
            .write(ma_csr_write),
-           .retire(ma_valid),
+           .retire(ma_valid && !trap),
            .rdata(ma_csr_old),
-           .illegal(csr_illegal));
+           .illegal(csr_illegal),
+           .trap(trap),
+           .trap_pc(ma_pc),
+           .trap_cause(trap_cause),
+           .trap_tval(trap_tval),
+           .mret(ma_valid && ma_mret && !trap),
+           .mtvec(mtvec),
+           .mepc(mepc));
+
+  // Trap decision for the instruction in MEM: earlier exceptions first, then
+  // the ones only MEM can detect.
+  always_comb begin
+    trap       = ma_valid;
+    trap_cause = ma_cause;
+    trap_tval  = ma_tval;
+    if (ma_exc) begin
+      // cause and tval from EX
+    end else if (ma_access_fault) begin
+      trap_cause = ma_mem_write ? CAUSE_STORE_ACCESS : CAUSE_LOAD_ACCESS;
+      trap_tval  = ma_alu_result;
+    end else if (ma_csr && csr_illegal) begin
+      trap_cause = CAUSE_ILLEGAL_INSTR;
+      trap_tval  = ma_instr;
+    end else begin
+      trap       = 1'b0;
+    end
+
+    flush    = ma_valid && (trap || ma_mret || ma_csr);
+    flush_pc = trap ? mtvec : ma_mret ? mepc : ma_pc + 32'd4;
+  end
 
   assign ma_result = ma_mem_read ? mem::load(ma_alu_result, ma_funct3) :
                      ma_csr      ? ma_csr_old : ma_alu_result;
@@ -165,17 +224,14 @@ module cu import isa::*; (
   always_ff @(posedge iclk) begin
     if (!rst_n) begin
       regs::pc <= 32'd0;
-      halting  <= 1'b0;
-      halted   <= 1'b0;
       id_valid <= 1'b0;
       ex_valid <= 1'b0;
       ma_valid <= 1'b0;
       wb_valid <= 1'b0;
-    end else if (!halted) begin
+    end else begin
       // ---- WB --------------------------------------------------------------
       if (wb_valid) begin
         if (wb_rd_we) regs::reg_page[wb_rd] <= wb_result;
-        if (wb_halt)  halted <= 1'b1;
 
         if (trace_en) begin
           if (wb_rd_we)
@@ -183,20 +239,17 @@ module cu import isa::*; (
           else if (wb_store)
             $display("(0x%08h) 0x%08h  mem[0x%08h] <= 0x%08h", wb_pc, wb_instr,
                      wb_store_addr, wb_store_data);
-          else if (wb_halt)
-            $display("(0x%08h) 0x%08h  %s", wb_pc, wb_instr,
-                     wb_instr == INSTR_EBREAK ? "ebreak" : "ecall");
           else
             $display("(0x%08h) 0x%08h", wb_pc, wb_instr);
         end
       end
 
       // ---- MEM -> WB -------------------------------------------------------
-      if (ma_valid && (ma_mem_read || ma_mem_write) &&
-          !mem::access_ok(ma_alu_result, ma_funct3[1:0]))
-        $fatal(1, "Memory access fault at 0x%08h (pc 0x%08h)", ma_alu_result, ma_pc);
+      if (trace_en && trap)
+        $display("(0x%08h) 0x%08h  trap mcause=%0d mtval=0x%08h", ma_pc, ma_instr,
+                 trap_cause, trap_tval);
 
-      if (ma_valid && ma_mem_write) begin
+      if (ma_valid && ma_mem_write && !trap) begin
         mem::mem_pages[ma_alu_result] <= ma_store_data[7:0];
         if (ma_funct3 != FUNCT3_SB)
           mem::mem_pages[ma_alu_result + 1] <= ma_store_data[15:8];
@@ -206,42 +259,35 @@ module cu import isa::*; (
         end
       end
 
-      // Becomes an illegal-instruction trap in step 4.
-      if (csr_flush && csr_illegal)
-        $fatal(1, "Illegal CSR 0x%03h access at pc 0x%08h", ma_instr[31:20], ma_pc);
-
-      wb_valid      <= ma_valid;
+      wb_valid      <= ma_valid && !trap;
       wb_pc         <= ma_pc;
       wb_instr      <= ma_instr;
       wb_rd         <= ma_rd;
       wb_rd_we      <= ma_rd_we;
-      wb_halt       <= ma_halt;
       wb_store      <= ma_mem_write;
       wb_result     <= ma_result;
       wb_store_addr <= ma_alu_result;
       wb_store_data <= ma_store_data;
 
       // ---- EX -> MEM -------------------------------------------------------
-      if (ex_valid && ex_ctrl.illegal)
-        $fatal(1, "Illegal instruction 0x%08h at pc 0x%08h", ex_instr, ex_pc);
-      if (ex_redirect && ex_target[1:0] != 2'b00)
-        $fatal(1, "Misaligned jump target 0x%08h at pc 0x%08h", ex_target, ex_pc);
-
-      ma_valid      <= ex_valid && !csr_flush;
+      ma_valid      <= ex_valid && !flush;
       ma_pc         <= ex_pc;
       ma_instr      <= ex_instr;
       ma_rd         <= ex_ctrl.rd;
       ma_rd_we      <= ex_ctrl.rd_we;
       ma_mem_read   <= ex_ctrl.mem_read;
       ma_mem_write  <= ex_ctrl.mem_write;
-      ma_halt       <= ex_ctrl.halt;
       ma_csr        <= ex_ctrl.csr;
+      ma_mret       <= ex_ctrl.mret;
+      ma_exc        <= ex_exc;
+      ma_cause      <= ex_cause;
+      ma_tval       <= ex_tval;
       ma_funct3     <= ex_ctrl.funct3;
       ma_alu_result <= ex_alu_result;
       ma_store_data <= ex_rs2_fwd;
 
       // ---- ID -> EX: bubble on a squash or a load-use stall ----------------
-      if (csr_flush || ex_redirect || load_use || !id_valid) begin
+      if (flush || ex_redirect || load_use || !id_valid) begin
         ex_valid <= 1'b0;
       end else begin
         ex_valid   <= 1'b1;
@@ -255,18 +301,14 @@ module cu import isa::*; (
       end
 
       // ---- IF -> ID and next pc --------------------------------------------
-      if (csr_flush) begin
-        regs::pc <= ma_pc + 32'd4;          // squash IF, ID and EX; refetch
+      if (flush) begin
+        regs::pc <= flush_pc;               // squash IF, ID and EX
         id_valid <= 1'b0;
-        halting  <= 1'b0;                   // a squashed ECALL is fetched again
       end else if (ex_redirect) begin
         regs::pc <= ex_target;              // squash IF and ID
         id_valid <= 1'b0;
       end else if (load_use) begin
         // hold pc and IF/ID
-      end else if (halting || (id_valid && id_ctrl.halt)) begin
-        halting  <= 1'b1;                   // nothing may follow ECALL/EBREAK
-        id_valid <= 1'b0;
       end else begin
         regs::pc <= regs::pc + 32'd4;
         id_valid <= 1'b1;

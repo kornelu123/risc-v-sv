@@ -47,7 +47,7 @@ endef
 # Keep intermediate .elf files for `make dasm` and the tohost lookup.
 .SECONDARY:
 
-all: simulate riscv-tests
+all: simulate riscv-tests priv-tests
 
 # Run $(TEST).S with an instruction trace.
 simulate: $(SIM) $(BUILD)/$(TEST).bin

@@ -50,9 +50,20 @@ package isa;
   localparam bit [2:0] FUNCT3_JALR     = 3'b000;
   localparam bit [2:0] FUNCT3_FENCE    = 3'b000;
 
-  // SYSTEM: only ECALL and EBREAK are part of RV32I (CSRs are Zicsr).
+  // SYSTEM with funct3 = 000
+  localparam bit [2:0]  FUNCT3_PRIV    = 3'b000;
   localparam bit [31:0] INSTR_ECALL    = 32'h00000073;
   localparam bit [31:0] INSTR_EBREAK   = 32'h00100073;
+  localparam bit [31:0] INSTR_MRET     = 32'h30200073;
+  localparam bit [31:0] INSTR_WFI      = 32'h10500073;
+
+  // Exception causes (mcause, interrupt bit 31 = 0)
+  localparam bit [31:0] CAUSE_MISALIGNED_FETCH = 32'd0;
+  localparam bit [31:0] CAUSE_ILLEGAL_INSTR    = 32'd2;
+  localparam bit [31:0] CAUSE_BREAKPOINT       = 32'd3;
+  localparam bit [31:0] CAUSE_LOAD_ACCESS      = 32'd5;
+  localparam bit [31:0] CAUSE_STORE_ACCESS     = 32'd7;
+  localparam bit [31:0] CAUSE_ECALL_M          = 32'd11;
 
   // RV32M funct3
   localparam bit [2:0] FUNCT3_MUL     = 3'b000;
@@ -125,7 +136,9 @@ package isa;
     bit            branch;
     bit            jal;
     bit            jalr;
-    bit            halt;       // ECALL / EBREAK
+    bit            ecall;
+    bit            ebreak;
+    bit            mret;
     bit            csr;        // Zicsr; the ALU result is the CSR write operand
     bit            illegal;
   } ctrl_t;
