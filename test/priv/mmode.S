@@ -75,6 +75,21 @@ RVTEST_CODE_BEGIN
   TEST_CASE(20, a0, 0, la a2, tdat; sw zero, 0(a2); li a1, 1; la t0, 1f; \
                        csrrw s6, mtvec, t0; .word 0; sw a1, 0(a2); 1: csrw mtvec, s6; lw a0, 0(a2))
 
+  # Performance counters and event selectors: read-only 0, writes ignored.
+  TEST_CASE(21, a0, 0, li a0, -1; csrw mhpmcounter3, a0; csrr a0, mhpmcounter3)
+  TEST_CASE(22, a0, 0, li a0, -1; csrw mhpmcounter31h, a0; csrr a0, mhpmcounter31h)
+  TEST_CASE(23, a0, 0, li a0, -1; csrw mhpmevent3, a0; csrr a0, mhpmevent3)
+  TEST_CASE(24, a0, 0, li a0, -1; csrw mhpmevent31, a0; csrr a0, mhpmevent31)
+  # mconfigptr (0xf15) exists, reads 0 (no configuration structure) and is
+  # read-only.
+  TEST_CASE(25, a0, 0, li a0, -1; csrr a0, 0xf15)
+  expect_trap 26, CAUSE_ILLEGAL_INSTRUCTION, 0xf1501073, .word 0xf1501073  # csrrw x0, mconfigptr, x0
+  # Just outside those ranges there are no CSRs.
+  expect_trap 27, CAUSE_ILLEGAL_INSTRUCTION, 0xb0102573, .word 0xb0102573  # csrr a0, 0xb01
+  expect_trap 28, CAUSE_ILLEGAL_INSTRUCTION, 0xb2002573, .word 0xb2002573  # csrr a0, 0xb20
+  expect_trap 29, CAUSE_ILLEGAL_INSTRUCTION, 0x32202573, .word 0x32202573  # csrr a0, 0x322
+  expect_trap 30, CAUSE_ILLEGAL_INSTRUCTION, 0xf1602573, .word 0xf1602573  # csrr a0, 0xf16
+
   TEST_PASSFAIL
 
   .align 2

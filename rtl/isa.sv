@@ -127,6 +127,16 @@ package isa;
   localparam bit [11:0] CSR_MARCHID   = 12'hF12;
   localparam bit [11:0] CSR_MIMPID    = 12'hF13;
   localparam bit [11:0] CSR_MHARTID   = 12'hF14;
+  localparam bit [11:0] CSR_MCONFIGPTR = 12'hF15;
+
+  // Hardware performance monitor: counters 3-31 (and their RV32 high
+  // halves) and event selectors 3-31, all read-only zero here.
+  localparam bit [11:0] CSR_MHPMCOUNTER3   = 12'hB03;
+  localparam bit [11:0] CSR_MHPMCOUNTER31  = 12'hB1F;
+  localparam bit [11:0] CSR_MHPMCOUNTER3H  = 12'hB83;
+  localparam bit [11:0] CSR_MHPMCOUNTER31H = 12'hB9F;
+  localparam bit [11:0] CSR_MHPMEVENT3     = 12'h323;
+  localparam bit [11:0] CSR_MHPMEVENT31    = 12'h33F;
 
   localparam bit [31:0] MISA_VALUE    = 32'h40001101;  // MXL=1 (RV32), A, I, M
   localparam bit [31:0] MIE_MASK      = 32'h00000888;  // MSIE, MTIE, MEIE
@@ -160,6 +170,7 @@ package isa;
     bit            mret;
     bit            csr;        // Zicsr; the ALU result is the CSR write operand
     bit            fence_i;    // flush and refetch after older stores
+    bit            wfi;        // sleep until an enabled interrupt is pending
     bit            lr;         // LR.W: load and set the reservation
     bit            sc;         // SC.W: store if the reservation holds
     bit            amo;        // AMO*.W: read-modify-write in MEM

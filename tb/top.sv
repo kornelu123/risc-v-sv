@@ -6,6 +6,8 @@
 //   +irq=<hex>          address of the program's `irq_lines` word, if any. Bits
 //                       3/7/11 drive the software/timer/external interrupt
 //                       inputs (mip layout), standing in for the CLINT/PLIC.
+//                       Bits 31:16 delay a new value by that many cycles, so
+//                       an interrupt can arrive while the core sleeps in WFI.
 //   +max_cycles=<n>     timeout (default 100000)
 //   +trace              print one line per retired instruction
 module t;
@@ -16,6 +18,8 @@ module t;
   bit [31:0] irq_addr;
   bit        irq_en;
   bit        irq_sw, irq_tm, irq_ex;
+  bit [31:0] irq_seen;       // last value read from irq_lines
+  int        irq_delay;      // cycles until irq_seen is applied
   bit [31:0] result;
   int        max_cycles;
 
@@ -29,10 +33,17 @@ module t;
 
   always @(negedge clk) begin
     /* verilator lint_off UNUSEDSIGNAL */
-    bit [31:0] w;      // only bits 3/7/11 are interrupt lines
+    bit [31:0] w;      // bits 31:16 delay, bits 3/7/11 interrupt lines
     /* verilator lint_on UNUSEDSIGNAL */
     w = irq_en ? mem::word_at(irq_addr) : 32'd0;
-    {irq_ex, irq_tm, irq_sw} <= {w[11], w[7], w[3]};
+    if (w != irq_seen) begin
+      irq_seen  <= w;
+      irq_delay <= int'(w[31:16]);
+    end else if (irq_delay != 0) begin
+      irq_delay <= irq_delay - 1;
+    end else begin
+      {irq_ex, irq_tm, irq_sw} <= {irq_seen[11], irq_seen[7], irq_seen[3]};
+    end
   end
 
   initial begin

@@ -211,7 +211,7 @@ module decoder import isa::*; (
             INSTR_ECALL:  ctrl.ecall  = 1'b1;
             INSTR_EBREAK: ctrl.ebreak = 1'b1;
             INSTR_MRET:   ctrl.mret   = 1'b1;
-            INSTR_WFI:    ;                       // no interrupts yet: a no-op
+            INSTR_WFI:    ctrl.wfi    = 1'b1;
             default:      ctrl.illegal = 1'b1;
           endcase
         end else begin
@@ -247,6 +247,7 @@ module decoder import isa::*; (
       ctrl.mret      = 1'b0;
       ctrl.csr       = 1'b0;
       ctrl.fence_i   = 1'b0;
+      ctrl.wfi       = 1'b0;
       ctrl.lr        = 1'b0;
       ctrl.sc        = 1'b0;
       ctrl.amo       = 1'b0;

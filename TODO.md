@@ -35,11 +35,12 @@ Every step ends with a test that must pass in `make` and CI.
 - [x] **M-mode CSRs**: `mstatus` (MIE/MPIE/MPP), `misa`, `mhartid`,
       `mvendorid/marchid/mimpid` (0), `mtvec`, `mscratch`, `mepc`, `mcause`,
       `mtval`, `mie`, `mip`.
-- [x] `wfi` (a no-op until interrupts exist).
+- [x] `wfi` (see step 2: it now sleeps).
 - [x] **Zicntr**: `cycle/time/instret` (+ `cycleh/timeh/instreth` on RV32).
       `time` mirrors `mcycle` until the CLINT (step 3) provides `mtime`.
-- [ ] `mhpmcounter3–31`, `mhpmevent3–31`, `mconfigptr`: the privileged spec
-      expects them (may be hard-wired to 0); they currently trap.
+- [x] `mhpmcounter3–31` (+`h`), `mhpmevent3–31`: read-only 0 (writes ignored),
+      as the spec allows; `mconfigptr` reads 0 (no configuration structure).
+      Acceptance: `test/priv/mmode.S` tests 21–30.
 - [x] **Test infra**: tests end by writing `tohost` (testbench watches it), so
       `ecall` is free to become a real trap. `make priv-tests` builds `rv32mi`
       with the official riscv-tests `p` environment, plus `test/priv/mmode.S`
@@ -63,8 +64,9 @@ Every step ends with a test that must pass in `make` and CI.
 - [x] Iterative divider with an EX stall instead of combinational `/` and `%`
       (needed for FPGA timing, not for correctness).
       Acceptance: `rv32um`, `test/isa/div_hazards.S`.
-- [ ] `wfi` is a no-op; stalling until an interrupt is pending would save
-      power on hardware.
+- [x] `wfi` sleeps: fetch stops until an interrupt enabled in `mie` is
+      pending (regardless of `mstatus.MIE`); a taken interrupt then has
+      `mepc` = `wfi` + 4. Acceptance: `test/priv/interrupts.S` tests 18–23.
 
 ## 3. SoC: memory and devices
 

@@ -83,6 +83,47 @@ irq_window_end:
   # mip's machine bits are read-only: writes are ignored.
   TEST_CASE(17, a0, 0, li a0, -1; csrw mip, a0; nop; nop; csrr a0, mip)
 
+  # WFI sleeps until an enabled interrupt arrives (200 cycles later); the
+  # interrupt is taken on the instruction after WFI (mepc = pc + 4). A WFI
+  # that does not wait would reach wfi_next before the interrupt arrives.
+  csrsi mstatus, MSTATUS_MIE
+  li   s3, 0
+  li   t0, (200 << 16) | MIP_MTIP
+  sw   t0, irq_lines, t1
+  wfi
+wfi_next:
+  mv   a0, s3
+  TEST_CASE(18, a0, 1, )
+  TEST_CASE(19, a1, 0, la t0, wfi_next; sub a1, s4, t0)
+
+  # With MIE = 0, WFI still wakes up when an enabled interrupt becomes pending
+  # and continues without a trap.
+  csrci mstatus, MSTATUS_MIE
+  li   s3, 0
+  csrr s6, mcycle
+  li   t0, (200 << 16) | MIP_MTIP
+  sw   t0, irq_lines, t1
+  wfi
+  csrr a1, mcycle
+  TEST_CASE(20, a0, 0, sub a1, a1, s6; sltiu a0, a1, 200)   # slept >= 200 cycles
+  TEST_CASE(21, s3, 0, )
+  TEST_CASE(22, a0, MIP_MTIP, csrr a0, mip; andi a0, a0, MIP_MTIP)
+  set_lines 0
+
+  # WFI keeps sleeping while only a non-enabled interrupt is pending (the
+  # software interrupt is pending throughout; mie enables only the timer,
+  # which arrives 200 cycles later). The spec only says "should" here.
+  li   t0, MIP_MTIP
+  csrw mie, t0
+  set_lines MIP_MSIP
+  csrr s6, mcycle
+  li   t0, (200 << 16) | MIP_MSIP | MIP_MTIP
+  sw   t0, irq_lines, t1
+  wfi
+  csrr a1, mcycle
+  TEST_CASE(23, a0, 0, sub a1, a1, s6; sltiu a0, a1, 200)   # slept >= 200 cycles
+  set_lines 0
+
   TEST_PASSFAIL
 
   .align 2

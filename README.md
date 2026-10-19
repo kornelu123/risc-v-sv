@@ -17,10 +17,13 @@ Classic 5-stage pipeline: IF, ID, EX, MEM, WB.
 - Machine mode only, with precise traps: exceptions (illegal instruction,
   ECALL, EBREAK, misaligned jump target, misaligned atomic, load/store access
   fault), interrupts, MRET, FENCE.I and CSR instructions take effect in MEM and
-  squash everything younger. The CSRs are in `rtl/csr.sv`.
+  squash everything younger. The CSRs are in `rtl/csr.sv`; the performance
+  counters `mhpmcounter3–31`/`mhpmevent3–31` and `mconfigptr` read as 0.
 - Interrupts: machine software/timer/external inputs (`mip` bits 3/7/11),
-  priority external > software > timer. The testbench drives them from a
-  program's `irq_lines` word until a CLINT/PLIC exists.
+  priority external > software > timer. WFI stops fetching until an
+  interrupt enabled in `mie` is pending. The testbench drives the inputs from
+  a program's `irq_lines` word (bits 31:16 delay a new value by that many
+  cycles) until a CLINT/PLIC exists.
 
 Tests report their result through a `tohost` word in memory, the riscv-tests
 convention: 1 = pass, `(failing test number << 1) | 1` = fail. The testbench

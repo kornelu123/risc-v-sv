@@ -3,7 +3,8 @@
 //   ID   decode, register read (same-cycle WB write bypassed), load-use check
 //   EX   ALU with operands forwarded from MEM/WB; branches and jumps resolved;
 //        DIV/REM run in a multi-cycle divider while EX, ID and IF stall
-//   MEM  data memory access; commit point for traps, MRET and CSR instructions
+//   MEM  data memory access and atomics; commit point for traps, MRET,
+//        FENCE.I, WFI and CSR instructions
 //   WB   register write-back
 //
 // Hazards:
@@ -11,11 +12,14 @@
 //     followed by a dependent instruction stalls IF/ID for one cycle.
 //   - Control: fetch predicts not taken. A taken branch or jump in EX
 //     redirects pc and squashes the two younger instructions in IF and ID.
-//   - Traps, MRET and CSR instructions take effect in MEM: everything older
-//     has completed, everything younger (EX/ID/IF) is squashed and fetch
-//     restarts at mtvec, mepc or the next instruction. CSR instructions
-//     flush so nothing younger runs with stale CSR state (MEM->EX forwarding
-//     only carries the ALU result).
+//   - Traps, MRET, FENCE.I, WFI and CSR instructions take effect in MEM:
+//     everything older has completed, everything younger (EX/ID/IF) is
+//     squashed and fetch restarts at mtvec, mepc or the next instruction.
+//     CSR instructions flush so nothing younger runs with stale CSR state
+//     (MEM->EX forwarding only carries the ALU result).
+//   - WFI: after it commits, fetch stays off until an interrupt enabled in
+//     mie is pending (whatever mstatus.MIE says). If MIE = 1 the interrupt is
+//     then taken on the next instruction, so mepc = WFI's pc + 4.
 //
 // Exceptions found before MEM (illegal instruction, ECALL, EBREAK, jump to a
 // misaligned target) travel down the pipeline with their instruction. A
@@ -66,7 +70,7 @@ module cu import isa::*; (
   bit [31:0]  ma_pc, ma_instr;
   regs::reg_t ma_rd;
   bit         ma_rd_we, ma_mem_read, ma_mem_write, ma_csr, ma_mret;
-  bit         ma_fence_i, ma_lr, ma_sc, ma_amo;
+  bit         ma_fence_i, ma_wfi, ma_lr, ma_sc, ma_amo;
   bit         ma_exc;          // exception found before MEM
   bit [31:0]  ma_cause, ma_tval;
   bit [2:0]   ma_funct3;
@@ -88,8 +92,10 @@ module cu import isa::*; (
   bit [31:0]  ma_wdata;
   bit         trap, flush;
   bit [31:0]  trap_cause, trap_tval, flush_pc, mtvec, mepc;
-  bit         irq;             // an enabled interrupt is pending
+  bit         irq;             // an enabled interrupt is pending and MIE = 1
   bit [31:0]  irq_cause;
+  bit         wake;            // an enabled interrupt is pending (ends WFI)
+  bit         sleeping;        // WFI committed; fetch is off until wake
 
   // ---- MEM/WB --------------------------------------------------------------
   bit         wb_valid;
@@ -262,7 +268,8 @@ module cu import isa::*; (
            .irq_timer(irq_timer),
            .irq_external(irq_external),
            .irq(irq),
-           .irq_cause(irq_cause));
+           .irq_cause(irq_cause),
+           .wake(wake));
 
   // Trap decision for the instruction in MEM. An interrupt is taken on that
   // instruction before it executes (mepc points at it, so it runs after
@@ -289,7 +296,7 @@ module cu import isa::*; (
       trap       = 1'b0;
     end
 
-    flush    = ma_valid && (trap || ma_mret || ma_csr || ma_fence_i);
+    flush    = ma_valid && (trap || ma_mret || ma_csr || ma_fence_i || ma_wfi);
     flush_pc = trap ? mtvec : ma_mret ? mepc : ma_pc + 32'd4;
   end
 
@@ -306,6 +313,7 @@ module cu import isa::*; (
       ma_valid   <= 1'b0;
       wb_valid   <= 1'b0;
       resv_valid <= 1'b0;
+      sleeping   <= 1'b0;
     end else begin
       // ---- WB --------------------------------------------------------------
       if (wb_valid) begin
@@ -368,6 +376,7 @@ module cu import isa::*; (
       ma_csr        <= ex_ctrl.csr;
       ma_mret       <= ex_ctrl.mret;
       ma_fence_i    <= ex_ctrl.fence_i;
+      ma_wfi        <= ex_ctrl.wfi;
       ma_lr         <= ex_ctrl.lr;
       ma_sc         <= ex_ctrl.sc;
       ma_amo        <= ex_ctrl.amo;
@@ -398,6 +407,10 @@ module cu import isa::*; (
       if (flush) begin
         regs::pc <= flush_pc;               // squash IF, ID and EX
         id_valid <= 1'b0;
+        sleeping <= ma_wfi && !trap && !wake;
+      end else if (sleeping) begin
+        id_valid <= 1'b0;                   // nothing is fetched while asleep
+        if (wake) sleeping <= 1'b0;
       end else if (div_stall) begin
         // hold pc and IF/ID behind the division
       end else if (ex_redirect) begin

@@ -23,7 +23,8 @@ module csr import isa::*; (
   input  bit         irq_timer,
   input  bit         irq_external,
   output bit         irq,         // an enabled interrupt is pending and MIE = 1
-  output bit [31:0]  irq_cause
+  output bit [31:0]  irq_cause,
+  output bit         wake         // an enabled interrupt is pending (any MIE): ends WFI
 );
   bit [31:0] mip, pending;
   bit        mstatus_mie, mstatus_mpie;
@@ -60,10 +61,15 @@ module csr import isa::*; (
       CSR_MVENDORID,
       CSR_MARCHID,
       CSR_MIMPID,
-      CSR_MHARTID:   rdata = 32'd0;
+      CSR_MHARTID,
+      CSR_MCONFIGPTR: rdata = 32'd0;          // no configuration structure
       default: begin
+        // The performance counters and event selectors exist but are
+        // read-only zero (writes ignored); anything else is unknown.
         rdata = 32'd0;
-        known = 1'b0;
+        known = addr inside {[CSR_MHPMCOUNTER3  : CSR_MHPMCOUNTER31],
+                             [CSR_MHPMCOUNTER3H : CSR_MHPMCOUNTER31H],
+                             [CSR_MHPMEVENT3    : CSR_MHPMEVENT31]};
       end
     endcase
 
@@ -80,6 +86,7 @@ module csr import isa::*; (
   assign mip     = {20'd0, irq_external, 3'd0, irq_timer, 3'd0, irq_software, 3'd0};
   assign pending = mip & mie;
   assign irq     = mstatus_mie && pending != 32'd0;
+  assign wake    = pending != 32'd0;
 
   // Priority: external > software > timer.
   always_comb begin
