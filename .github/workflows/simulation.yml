@@ -27,11 +27,17 @@ jobs:
       - name: Simulate test/test.S
         run: make simulate
 
-      - name: Run riscv-tests (rv32ui, rv32um)
+      - name: Run riscv-tests (rv32ui, rv32um, rv32ua, test/isa)
         run: make riscv-tests
 
       - name: Run machine-mode tests (rv32mi, test/priv)
         run: make priv-tests
+
+      - name: Run both suites with other cache shapes (direct-mapped, 4-way, tiny)
+        run: make cache-configs
+
+      - name: ULX3S drivers (SDRAM, SD card) tests and lint
+        run: make -C ulx3s test lint
 
       - name: Upload test logs
         if: failure()
@@ -42,4 +48,9 @@ jobs:
             build/isa/**/*.log
             build/isa-p/**/*.log
             build/test/priv/*.log
+            build/test/isa/*.log
+            build/cfg-*/isa/**/*.log
+            build/cfg-*/isa-p/**/*.log
+            build/cfg-*/test/priv/*.log
+            build/cfg-*/test/isa/*.log
           if-no-files-found: ignore

@@ -20,6 +20,14 @@ Every step ends with a test that must pass in `make` and CI.
 - [x] riscv-tests `rv32ui` + `rv32um` in `make riscv-tests` and GitHub Actions
 - [x] Machine mode (step 1 below): `rv32mi` + `test/priv` in `make priv-tests`
       and GitHub Actions
+- [x] A, Zifencei, interrupts, multi-cycle divider (step 2 below): `rv32ua`,
+      `rv32ui/fence_i`, `test/isa`, `test/priv/interrupts.S`
+- [x] Split write-back I/D caches (`rtl/cache.sv`, N-way, tree-PLRU):
+      `test/isa/cache.S`, `test/priv/cache_irq.S`, every suite again in
+      `make cache-configs`
+- [x] SDRAM as main RAM: `rtl/soc.sv` = core + address decoder
+      (`rtl/bus.sv`, `rtl/memmap.sv`) + `ulx3s/rtl/sdram.sv`. Every test runs
+      against the SDRAM chip model, which checks protocol and timing.
 
 ## 1. Core: privileged basics (M-mode)
 
@@ -33,11 +41,12 @@ Every step ends with a test that must pass in `make` and CI.
 - [x] **M-mode CSRs**: `mstatus` (MIE/MPIE/MPP), `misa`, `mhartid`,
       `mvendorid/marchid/mimpid` (0), `mtvec`, `mscratch`, `mepc`, `mcause`,
       `mtval`, `mie`, `mip`.
-- [x] `wfi` (a no-op until interrupts exist).
+- [x] `wfi` (see step 2: it now sleeps).
 - [x] **Zicntr**: `cycle/time/instret` (+ `cycleh/timeh/instreth` on RV32).
       `time` mirrors `mcycle` until the CLINT (step 3) provides `mtime`.
-- [ ] `mhpmcounter3–31`, `mhpmevent3–31`, `mconfigptr`: the privileged spec
-      expects them (may be hard-wired to 0); they currently trap.
+- [x] `mhpmcounter3–31` (+`h`), `mhpmevent3–31`: read-only 0 (writes ignored),
+      as the spec allows; `mconfigptr` reads 0 (no configuration structure).
+      Acceptance: `test/priv/mmode.S` tests 21–30.
 - [x] **Test infra**: tests end by writing `tohost` (testbench watches it), so
       `ecall` is free to become a real trap. `make priv-tests` builds `rv32mi`
       with the official riscv-tests `p` environment, plus `test/priv/mmode.S`
@@ -47,21 +56,44 @@ Every step ends with a test that must pass in `make` and CI.
 
 ## 2. Core: remaining Linux ISA requirements
 
-- [ ] **A extension**: `lr.w/sc.w` (reservation valid bit + address; cleared on
-      trap/`sc`) and `amo*.w` (read-modify-write in MEM, one extra cycle).
+- [x] **A extension**: `lr.w/sc.w` (reservation valid bit + address; cleared on
+      trap/`sc`) and `amo*.w` (read-modify-write in MEM; a single cycle with
+      the asynchronous memory model, more with block RAM).
       Acceptance: `rv32ua`.
-- [ ] **Zifencei**: `fence.i` flushes the pipeline and refetches.
-      Acceptance: drop the `rv32ui/fence_i` exclusion in the Makefile.
-- [ ] **Interrupts**: timer, software and external interrupts via `mie/mip`,
-      taken at the commit stage like exceptions.
-- [ ] Iterative divider with an EX stall instead of combinational `/` and `%`
+- [x] **Zifencei**: `fence.i` flushes the pipeline and refetches.
+      Acceptance: `rv32ui/fence_i`, `test/isa/fence_i.S` (stale instructions
+      already in the pipeline).
+- [x] **Interrupts**: timer, software and external interrupts via `mie/mip`,
+      taken at the commit stage like exceptions. The inputs come from the
+      testbench (`irq_lines`) until the CLINT/PLIC in step 3.
+      Acceptance: `test/priv/interrupts.S`.
+- [x] Iterative divider with an EX stall instead of combinational `/` and `%`
       (needed for FPGA timing, not for correctness).
+      Acceptance: `rv32um`, `test/isa/div_hazards.S`.
+- [x] `wfi` sleeps: fetch stops until an interrupt enabled in `mie` is
+      pending (regardless of `mstatus.MIE`); a taken interrupt then has
+      `mepc` = `wfi` + 4. Acceptance: `test/priv/interrupts.S` tests 18–23.
 
 ## 3. SoC: memory and devices
 
-- [ ] **Memory map + bus**: replace the `mem` package with RAM and MMIO
-      modules behind an address decoder (byte enables, wait states).
-      RAM: a few MB for NOMMU, 32–64 MB for full Linux.
+- [x] **ULX3S drivers** (`ulx3s/`): SDRAM controller (bursts of up to 8
+      32-bit words for cache lines, open-row policy, 32/64 MB parts) and SD
+      card controller (SPI mode, 512-byte blocks), each with a
+      protocol/timing-checking simulation model. Not on hardware yet.
+- [x] Attach SDRAM as main RAM (wait states, refresh): 32 MB at
+      `0x8000_0000`, where reset starts; see `rtl/memmap.sv`. Tested in
+      simulation only.
+- [ ] SD card as an MMIO block device (or behind a boot ROM that loads the
+      kernel). Needs the uncached MMIO path below, plus a register interface
+      around `ulx3s/rtl/sd_spi.sv`: block number, start, status, and a
+      512-byte buffer or a data FIFO.
+- [ ] **Memory map + bus, MMIO**: `rtl/bus.sv` decodes RAM and answers
+      everything else with zeros. Devices need an uncached path: every access
+      goes through the write-back data cache now. That means an address
+      range the data cache passes through as single-word accesses with byte
+      enables, `memmap::in_ram` widened to cover the devices for access
+      faults, and instruction access faults for fetches outside RAM
+      (illegal instructions now).
 - [ ] **CLINT**: `mtime`, `mtimecmp`, `msip` (machine timer/software
       interrupts).
 - [ ] **UART**: ns16550a-compatible subset (THR/RBR/LSR/IER) for the console;
@@ -105,7 +137,8 @@ Every step ends with a test that must pass in `make` and CI.
 
 - [ ] C extension (most prebuilt userspaces assume it).
 - [ ] F/D for hard-float userspace (otherwise build soft-float `ilp32`).
-- [ ] FPGA: synchronous BRAM/caches, DSP multiplier, DDR controller, timing
+- [ ] FPGA: synchronous BRAM for the caches (lookups are combinational now,
+      so they map to LUT RAM), DSP multiplier, DDR controller, timing
       closure.
 - [ ] Compliance against a reference model with
       [riscv-arch-test](https://github.com/riscv-non-isa/riscv-arch-test).

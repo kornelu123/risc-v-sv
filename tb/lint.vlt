@@ -1,0 +1,4 @@
+`verilator_config
+// The SDRAM chip model is behavioural testbench code (blocking assignments,
+// variables initialised at declaration); `make -C ulx3s lint` covers the RTL.
+lint_off -file "ulx3s/tb/models/sdram_model.sv"
