@@ -48,3 +48,10 @@ watches that address; the Makefile reads it from the ELF.
 
 Testbench plusargs: `+bin=<file>`, `+tohost=<hex address>`, `+irq=<hex address>`,
 `+max_cycles=<n>`, `+trace`.
+
+## ULX3S drivers
+
+`ulx3s/` holds the board's SDRAM controller and SD card (SPI mode) controller
+with their simulation models; see `ulx3s/README.md`. `make -C ulx3s` runs
+their tests (also in CI), `make -C ulx3s synth` checks them with
+yosys/nextpnr-ecp5. They are not connected to the core yet (TODO.md step 3).

@@ -70,6 +70,12 @@ Every step ends with a test that must pass in `make` and CI.
 
 ## 3. SoC: memory and devices
 
+- [x] **ULX3S drivers** (`ulx3s/`): SDRAM controller (bursts of up to 8
+      32-bit words for cache lines, open-row policy, 32/64 MB parts) and SD
+      card controller (SPI mode, 512-byte blocks), each with a
+      protocol/timing-checking simulation model. Not on hardware yet.
+- [ ] Attach them to the bus: SDRAM as main RAM (wait states, refresh), SD
+      card as an MMIO block device (or behind a boot ROM that loads the kernel).
 - [ ] **Memory map + bus**: replace the `mem` package with RAM and MMIO
       modules behind an address decoder (byte enables, wait states).
       RAM: a few MB for NOMMU, 32–64 MB for full Linux.
