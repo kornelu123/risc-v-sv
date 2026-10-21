@@ -90,6 +90,11 @@ RVTEST_CODE_BEGIN
   expect_trap 29, CAUSE_ILLEGAL_INSTRUCTION, 0x32202573, .word 0x32202573  # csrr a0, 0x322
   expect_trap 30, CAUSE_ILLEGAL_INSTRUCTION, 0xf1602573, .word 0xf1602573  # csrr a0, 0xf16
 
+  # A jump outside RAM: the bus answers the fetch (with zeros) and the
+  # instruction there traps with mepc = its address. Straight to label 1.
+  TEST_CASE(31, a0, UNMAPPED, la t0, 1f; csrrw s6, mtvec, t0; li t1, UNMAPPED; \
+                              jr t1; 1: csrw mtvec, s6; csrr a0, mepc)
+
   TEST_PASSFAIL
 
   .align 2

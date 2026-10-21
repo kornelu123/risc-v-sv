@@ -33,6 +33,9 @@ jobs:
       - name: Run machine-mode tests (rv32mi, test/priv)
         run: make priv-tests
 
+      - name: Run both suites with other cache shapes (direct-mapped, 4-way, tiny)
+        run: make cache-configs
+
       - name: ULX3S drivers (SDRAM, SD card) tests and lint
         run: make -C ulx3s test lint
 
@@ -46,4 +49,8 @@ jobs:
             build/isa-p/**/*.log
             build/test/priv/*.log
             build/test/isa/*.log
+            build/cfg-*/isa/**/*.log
+            build/cfg-*/isa-p/**/*.log
+            build/cfg-*/test/priv/*.log
+            build/cfg-*/test/isa/*.log
           if-no-files-found: ignore

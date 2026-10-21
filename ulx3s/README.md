@@ -1,12 +1,13 @@
 # ULX3S peripheral drivers
 
 Controllers for the ULX3S board's SDRAM and micro-SD card slot, with
-simulation models that check the chips' protocols and timing. They are not
-yet connected to the core; that is TODO.md step 3 (bus and memory map).
+simulation models that check the chips' protocols and timing. The SDRAM
+controller is the core's RAM (`../rtl/soc.sv`), and the core's tests run
+against `sdram_model.sv`. The SD card is not connected yet (TODO.md step 3).
 
     rtl/sdram.sv               SDR SDRAM controller (bursts of 32-bit words, open rows)
     rtl/sd_spi.sv              SD card controller, SPI mode (512-byte blocks)
-    tb/models/sdram_model.sv   SDRAM model: timing/protocol checks + storage
+    tb/models/sdram_model.sv   SDRAM model: timing/protocol checks + storage (peek/poke backdoor)
     tb/models/sd_card_model.sv SD card model (SPI mode): protocol checks + storage
     tb/tb_sdram.sv, tb/tb_sd_spi.sv   self-checking testbenches
 

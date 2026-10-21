@@ -105,6 +105,11 @@ module sdram_model #(
     return mem.exists(k) != 0 ? mem[k] : fill(k);
   endfunction
 
+  // Write data without timing (testbench backdoor, e.g. to load a program).
+  function automatic void poke(bit [1:0] b, bit [12:0] r, int col, logic [15:0] d);
+    mem[key_of(b, r, col)] = d;
+  endfunction
+
   // ---- Bus ------------------------------------------------------------------
   always @(clk or dq_in_en or dq_out_en)
     if (dq_in_en && dq_out_en) fail("data bus driven by controller and SDRAM at once");

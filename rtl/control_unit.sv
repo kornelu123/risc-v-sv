@@ -1,9 +1,9 @@
 // In-order 5-stage RV32I pipeline:
-//   IF   fetch at pc
+//   IF   fetch at pc from the instruction cache
 //   ID   decode, register read (same-cycle WB write bypassed), load-use check
 //   EX   ALU with operands forwarded from MEM/WB; branches and jumps resolved;
 //        DIV/REM run in a multi-cycle divider while EX, ID and IF stall
-//   MEM  data memory access and atomics; commit point for traps, MRET,
+//   MEM  data cache access and atomics; commit point for traps, MRET,
 //        FENCE.I, WFI and CSR instructions
 //   WB   register write-back
 //
@@ -21,22 +21,51 @@
 //     mie is pending (whatever mstatus.MIE says). If MIE = 1 the interrupt is
 //     then taken on the next instruction, so mepc = WFI's pc + 4.
 //
+// Caches (rtl/cache.sv): split, write-back instruction and data caches share
+// the memory port through rtl/mem_arbiter.sv (data cache first).
+//   - An instruction cache miss sends bubbles into ID until the line is in.
+//   - A data cache miss holds MEM, and everything behind it, until the line
+//     is in; WB receives bubbles. An interrupt can still be taken on the
+//     waiting instruction.
+//   - FENCE.I waits in MEM until the data cache has written back every
+//     dirty line and the instruction cache is idle, then invalidates the
+//     instruction cache and refetches.
+//
 // Exceptions found before MEM (illegal instruction, ECALL, EBREAK, jump to a
 // misaligned target) travel down the pipeline with their instruction. A
 // trapping instruction does not write rd or memory and does not retire.
-module cu import isa::*; (
-  input  logic iclk,
-  input  logic rst_n,
-  input  logic irq_software,   // machine software interrupt (mip.MSIP)
-  input  logic irq_timer,      // machine timer interrupt (mip.MTIP)
-  input  logic irq_external    // machine external interrupt (mip.MEIP)
+module cu import isa::*; #(
+  parameter int IC_WAYS       = 2,
+  parameter int IC_SETS       = 64,
+  parameter int IC_LINE_WORDS = 8,
+  parameter int DC_WAYS       = 2,
+  parameter int DC_SETS       = 64,
+  parameter int DC_LINE_WORDS = 8
+) (
+  input  logic        iclk,
+  input  logic        rst_n,
+  input  logic        irq_software,   // machine software interrupt (mip.MSIP)
+  input  logic        irq_timer,      // machine timer interrupt (mip.MTIP)
+  input  logic        irq_external,   // machine external interrupt (mip.MEIP)
+
+  // Memory: the request interface of ulx3s/rtl/sdram.sv, word addresses.
+  output logic        mem_req_valid,
+  input  logic        mem_req_ready,
+  output logic        mem_req_we,
+  output logic [29:0] mem_req_addr,
+  output logic [2:0]  mem_req_len,
+  output logic [31:0] mem_req_wdata,
+  output logic [3:0]  mem_req_wstrb,
+  input  logic        mem_wr_ready,
+  input  logic        mem_rsp_valid,
+  input  logic [31:0] mem_rsp_rdata
 );
   bit trace_en;
   initial trace_en = $test$plusargs("trace");
 
   // ---- IF ------------------------------------------------------------------
-  bit [31:0] if_instr;
-  assign if_instr = mem::fetch(regs::pc);
+  logic        ic_hit, ic_busy, ic_invalidate;
+  logic [31:0] if_instr;
 
   // ---- IF/ID ---------------------------------------------------------------
   bit         id_valid;
@@ -90,6 +119,9 @@ module cu import isa::*; (
   bit [31:0]  ma_amo_result;
   bit         ma_do_store;     // MEM writes memory (failed SC.W does not)
   bit [31:0]  ma_wdata;
+  logic       dc_req, dc_hit, dc_dirty;
+  logic [31:0] dc_rdata;       // the four bytes at ma_alu_result
+  bit         ma_stall;        // MEM waits for the data cache or for FENCE.I
   bit         trap, flush;
   bit [31:0]  trap_cause, trap_tval, flush_pc, mtvec, mepc;
   bit         irq;             // an enabled interrupt is pending and MIE = 1
@@ -156,11 +188,11 @@ module cu import isa::*; (
         .res(ex_alu_result));
 
   // Divisions run in the multi-cycle divider: EX holds the division (and
-  // IF/ID hold behind it) until the result is ready; MEM receives bubbles.
-  // The operands are latched when the division starts, so later changes in
-  // the forwarding sources do not matter. A flush can only squash a division
-  // in its first EX cycle (afterwards MEM holds only bubbles, so nothing can
-  // trap), which is why the divider is simply not started then.
+  // IF/ID hold behind it) until the result is ready and MEM can take it;
+  // MEM receives bubbles meanwhile. The operands are latched when the
+  // division starts, so later changes in the forwarding sources do not
+  // matter. A flush squashes a running division (MEM can trap while it
+  // waits for the data cache): the divider is aborted, and not started.
   assign ex_is_div = ex_valid && !ex_ctrl.illegal &&
                      (ex_ctrl.alu_op == ALU_DIV || ex_ctrl.alu_op == ALU_DIVU ||
                       ex_ctrl.alu_op == ALU_REM || ex_ctrl.alu_op == ALU_REMU);
@@ -169,7 +201,8 @@ module cu import isa::*; (
   divider div(.clk(iclk),
               .rst_n(rst_n),
               .start(ex_is_div && !flush),
-              .consume(ex_is_div && div_done),
+              .abort(flush),
+              .consume(ex_is_div && div_done && !ma_stall),
               .op(ex_ctrl.alu_op),
               .a(ex_rs1_fwd),
               .b(ex_rs2_fwd),
@@ -220,15 +253,16 @@ module cu import isa::*; (
   // write; CSRRS*/CSRRC* only write if the rs1/zimm field is not zero.
   assign ma_csr_write = ma_funct3[1:0] == FUNCT3_CSRRW[1:0] || ma_instr[19:15] != 5'd0;
 
+  // Only RAM is mapped (rtl/memmap.sv).
   assign ma_access_fault = (ma_mem_read || ma_mem_write) &&
-                           !mem::access_ok(ma_alu_result, ma_funct3[1:0]);
+                           !memmap::in_ram(ma_alu_result, ma_funct3[1:0]);
 
   // ---- A extension -----------------------------------------------------------
-  // AMOs read and write memory in the same MEM cycle (asynchronous read,
-  // write at the clock edge). Atomics must be naturally aligned.
+  // AMOs read and write the data cache in the same MEM cycle (combinational
+  // read, write at the clock edge). Atomics must be naturally aligned.
   assign ma_atomic_misaligned = (ma_lr || ma_sc || ma_amo) && ma_alu_result[1:0] != 2'b00;
   assign sc_ok                = resv_valid && resv_addr == ma_alu_result;
-  assign ma_mem_old           = mem::word_at(ma_alu_result);
+  assign ma_mem_old           = dc_rdata;
 
   always_comb begin
     case (ma_instr[31:27])
@@ -254,7 +288,7 @@ module cu import isa::*; (
            .op(ma_funct3[1:0]),
            .src(ma_alu_result),
            .write(ma_csr_write),
-           .retire(ma_valid && !trap),
+           .retire(ma_valid && !trap && !ma_stall),
            .rdata(ma_csr_old),
            .illegal(csr_illegal),
            .trap(trap),
@@ -295,19 +329,130 @@ module cu import isa::*; (
     end else begin
       trap       = 1'b0;
     end
-
-    flush    = ma_valid && (trap || ma_mret || ma_csr || ma_fence_i || ma_wfi);
-    flush_pc = trap ? mtvec : ma_mret ? mepc : ma_pc + 32'd4;
   end
 
+  // ==== Caches ==============================================================
+  // The data cache sees the accesses that reach memory: no exception found
+  // earlier or in MEM, and not a failing SC.W (nothing to read or write). The
+  // store itself only happens if the instruction commits.
+  assign dc_req = ma_valid && !ma_exc && !ma_atomic_misaligned && !ma_access_fault &&
+                  ((ma_mem_read && !ma_sc) || ma_do_store);
+
+  // A trap (only an interrupt is possible here) is taken even while MEM
+  // waits; the cache finishes its refill on its own.
+  assign ma_stall = ma_valid && !trap &&
+                    ((dc_req && !dc_hit) || (ma_fence_i && (dc_dirty || ic_busy)));
+
+  assign flush         = ma_valid && !ma_stall &&
+                         (trap || ma_mret || ma_csr || ma_fence_i || ma_wfi);
+  assign flush_pc      = trap ? mtvec : ma_mret ? mepc : ma_pc + 32'd4;
+  assign ic_invalidate = ma_valid && ma_fence_i && !trap && !ma_stall;
+
+  // Memory port: master 0 = data cache, 1 = instruction cache.
+  logic [1:0]       m_req_valid, m_req_ready, m_req_we, m_wr_ready, m_rsp_valid;
+  logic [1:0][29:0] m_req_addr;
+  logic [1:0][2:0]  m_req_len;
+  logic [1:0][31:0] m_req_wdata;
+  logic [1:0][3:0]  m_req_wstrb;
+  logic [31:0]      m_rsp_rdata;
+
+  cache #(.WAYS(DC_WAYS), .SETS(DC_SETS), .LINE_WORDS(DC_LINE_WORDS)) dcache(
+    .clk(iclk),
+    .rst_n(rst_n),
+    .req(dc_req),
+    .addr(ma_alu_result),
+    .size(ma_funct3[1:0]),
+    .we(ma_do_store && !trap),
+    .wdata(ma_wdata),
+    .hit(dc_hit),
+    .rdata(dc_rdata),
+    .invalidate(1'b0),
+    .clean(ma_valid && ma_fence_i),
+    .dirty(dc_dirty),
+    // verilator lint_off PINCONNECTEMPTY
+    .busy(),
+    // verilator lint_on PINCONNECTEMPTY
+    .mem_req_valid(m_req_valid[0]),
+    .mem_req_ready(m_req_ready[0]),
+    .mem_req_we(m_req_we[0]),
+    .mem_req_addr(m_req_addr[0]),
+    .mem_req_len(m_req_len[0]),
+    .mem_req_wdata(m_req_wdata[0]),
+    .mem_req_wstrb(m_req_wstrb[0]),
+    .mem_wr_ready(m_wr_ready[0]),
+    .mem_rsp_valid(m_rsp_valid[0]),
+    .mem_rsp_rdata(m_rsp_rdata));
+
+  // Fetch is off while sleeping in WFI.
+  cache #(.WAYS(IC_WAYS), .SETS(IC_SETS), .LINE_WORDS(IC_LINE_WORDS)) icache(
+    .clk(iclk),
+    .rst_n(rst_n),
+    .req(!sleeping),
+    .addr(regs::pc),
+    .size(2'd2),
+    .we(1'b0),
+    .wdata(32'd0),
+    .hit(ic_hit),
+    .rdata(if_instr),
+    .invalidate(ic_invalidate),
+    .clean(1'b0),
+    // verilator lint_off PINCONNECTEMPTY
+    .dirty(),                   // never written
+    // verilator lint_on PINCONNECTEMPTY
+    .busy(ic_busy),
+    .mem_req_valid(m_req_valid[1]),
+    .mem_req_ready(m_req_ready[1]),
+    .mem_req_we(m_req_we[1]),
+    .mem_req_addr(m_req_addr[1]),
+    .mem_req_len(m_req_len[1]),
+    .mem_req_wdata(m_req_wdata[1]),
+    .mem_req_wstrb(m_req_wstrb[1]),
+    .mem_wr_ready(m_wr_ready[1]),
+    .mem_rsp_valid(m_rsp_valid[1]),
+    .mem_rsp_rdata(m_rsp_rdata));
+
+  mem_arbiter arb(.clk(iclk),
+                  .rst_n(rst_n),
+                  .m_req_valid,
+                  .m_req_ready,
+                  .m_req_we,
+                  .m_req_addr,
+                  .m_req_len,
+                  .m_req_wdata,
+                  .m_req_wstrb,
+                  .m_wr_ready,
+                  .m_rsp_valid,
+                  .m_rsp_rdata,
+                  .req_valid(mem_req_valid),
+                  .req_ready(mem_req_ready),
+                  .req_we(mem_req_we),
+                  .req_addr(mem_req_addr),
+                  .req_len(mem_req_len),
+                  .req_wdata(mem_req_wdata),
+                  .req_wstrb(mem_req_wstrb),
+                  .wr_ready(mem_wr_ready),
+                  .rsp_valid(mem_rsp_valid),
+                  .rsp_rdata(mem_rsp_rdata));
+
+  // ==== MEM result ===========================================================
+  function automatic bit [31:0] load_extend(bit [31:0] w, bit [2:0] funct3);
+    case (funct3)
+      FUNCT3_LB:  load_extend = {{24{w[7]}},  w[7:0]};
+      FUNCT3_LH:  load_extend = {{16{w[15]}}, w[15:0]};
+      FUNCT3_LBU: load_extend = {24'd0, w[7:0]};
+      FUNCT3_LHU: load_extend = {16'd0, w[15:0]};
+      default:    load_extend = w;                       // LW, LR.W, AMOs
+    endcase
+  endfunction
+
   assign ma_result = ma_sc       ? {31'd0, !sc_ok} :          // 0 = success
-                     ma_mem_read ? mem::load(ma_alu_result, ma_funct3) :
+                     ma_mem_read ? load_extend(dc_rdata, ma_funct3) :
                      ma_csr      ? ma_csr_old : ma_alu_result;
 
   // ==== Pipeline registers ==================================================
   always_ff @(posedge iclk) begin
     if (!rst_n) begin
-      regs::pc   <= 32'd0;
+      regs::pc   <= memmap::RESET_PC;
       id_valid   <= 1'b0;
       ex_valid   <= 1'b0;
       ma_valid   <= 1'b0;
@@ -335,27 +480,17 @@ module cu import isa::*; (
         $display("(0x%08h) 0x%08h  trap mcause=%0d mtval=0x%08h", ma_pc, ma_instr,
                  trap_cause, trap_tval);
 
-      if (ma_valid && ma_do_store && !trap) begin
-        mem::mem_pages[ma_alu_result] <= ma_wdata[7:0];
-        if (ma_funct3 != FUNCT3_SB)
-          mem::mem_pages[ma_alu_result + 1] <= ma_wdata[15:8];
-        if (ma_funct3 == FUNCT3_SW) begin
-          mem::mem_pages[ma_alu_result + 2] <= ma_wdata[23:16];
-          mem::mem_pages[ma_alu_result + 3] <= ma_wdata[31:24];
-        end
-      end
-
       // A trap (including an interrupt) drops the reservation; every SC.W
       // consumes it, successful or not.
       if (trap)
         resv_valid <= 1'b0;
-      else if (ma_valid && ma_lr) begin
+      else if (ma_valid && ma_lr && !ma_stall) begin
         resv_valid <= 1'b1;
         resv_addr  <= ma_alu_result;
-      end else if (ma_valid && ma_sc)
+      end else if (ma_valid && ma_sc && !ma_stall)
         resv_valid <= 1'b0;
 
-      wb_valid      <= ma_valid && !trap;
+      wb_valid      <= ma_valid && !trap && !ma_stall;
       wb_pc         <= ma_pc;
       wb_instr      <= ma_instr;
       wb_rd         <= ma_rd;
@@ -365,31 +500,37 @@ module cu import isa::*; (
       wb_store_addr <= ma_alu_result;
       wb_store_data <= ma_wdata;
 
-      // ---- EX -> MEM -------------------------------------------------------
-      ma_valid      <= ex_valid && !flush && !div_stall;
-      ma_pc         <= ex_pc;
-      ma_instr      <= ex_instr;
-      ma_rd         <= ex_ctrl.rd;
-      ma_rd_we      <= ex_ctrl.rd_we;
-      ma_mem_read   <= ex_ctrl.mem_read;
-      ma_mem_write  <= ex_ctrl.mem_write;
-      ma_csr        <= ex_ctrl.csr;
-      ma_mret       <= ex_ctrl.mret;
-      ma_fence_i    <= ex_ctrl.fence_i;
-      ma_wfi        <= ex_ctrl.wfi;
-      ma_lr         <= ex_ctrl.lr;
-      ma_sc         <= ex_ctrl.sc;
-      ma_amo        <= ex_ctrl.amo;
-      ma_exc        <= ex_exc;
-      ma_cause      <= ex_cause;
-      ma_tval       <= ex_tval;
-      ma_funct3     <= ex_ctrl.funct3;
-      ma_alu_result <= ex_result;
-      ma_store_data <= ex_rs2_fwd;
+      // ---- EX -> MEM: hold while MEM waits ---------------------------------
+      if (!ma_stall) begin
+        ma_valid      <= ex_valid && !flush && !div_stall;
+        ma_pc         <= ex_pc;
+        ma_instr      <= ex_instr;
+        ma_rd         <= ex_ctrl.rd;
+        ma_rd_we      <= ex_ctrl.rd_we;
+        ma_mem_read   <= ex_ctrl.mem_read;
+        ma_mem_write  <= ex_ctrl.mem_write;
+        ma_csr        <= ex_ctrl.csr;
+        ma_mret       <= ex_ctrl.mret;
+        ma_fence_i    <= ex_ctrl.fence_i;
+        ma_wfi        <= ex_ctrl.wfi;
+        ma_lr         <= ex_ctrl.lr;
+        ma_sc         <= ex_ctrl.sc;
+        ma_amo        <= ex_ctrl.amo;
+        ma_exc        <= ex_exc;
+        ma_cause      <= ex_cause;
+        ma_tval       <= ex_tval;
+        ma_funct3     <= ex_ctrl.funct3;
+        ma_alu_result <= ex_result;
+        ma_store_data <= ex_rs2_fwd;
+      end
 
-      // ---- ID -> EX: bubble on squash / load-use, hold during a division -----
-      if (div_stall && !flush) begin
-        // hold EX
+      // ---- ID -> EX: bubble on squash / load-use, hold during a division or
+      // while MEM waits. A held instruction keeps its forwarded operands: the
+      // producers in MEM/WB move on (MEM never waits on a load EX depends on,
+      // the load-use stall keeps those apart).
+      if ((div_stall || ma_stall) && !flush) begin
+        ex_rs1_val <= ex_rs1_fwd;
+        ex_rs2_val <= ex_rs2_fwd;
       end else if (flush || ex_redirect || load_use || !id_valid) begin
         ex_valid <= 1'b0;
       end else begin
@@ -411,13 +552,15 @@ module cu import isa::*; (
       end else if (sleeping) begin
         id_valid <= 1'b0;                   // nothing is fetched while asleep
         if (wake) sleeping <= 1'b0;
-      end else if (div_stall) begin
-        // hold pc and IF/ID behind the division
+      end else if (div_stall || ma_stall) begin
+        // hold pc and IF/ID behind the division or the waiting MEM
       end else if (ex_redirect) begin
         regs::pc <= ex_target;              // squash IF and ID
         id_valid <= 1'b0;
       end else if (load_use) begin
         // hold pc and IF/ID
+      end else if (!ic_hit) begin
+        id_valid <= 1'b0;                   // instruction cache miss: wait for the line
       end else begin
         regs::pc <= regs::pc + 32'd4;
         id_valid <= 1'b1;

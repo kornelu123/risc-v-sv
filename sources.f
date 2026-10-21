@@ -1,8 +1,13 @@
 rtl/regs.sv
 rtl/isa.sv
-rtl/mem.sv
+rtl/memmap.sv
 rtl/alu.sv
 rtl/divider.sv
 rtl/csr.sv
 rtl/decoder.sv
+rtl/cache.sv
+rtl/mem_arbiter.sv
 rtl/control_unit.sv
+rtl/bus.sv
+ulx3s/rtl/sdram.sv
+rtl/soc.sv

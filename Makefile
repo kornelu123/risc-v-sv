@@ -11,7 +11,24 @@ CFLAGS  := -march=rv32ima_zicsr_zifencei -mabi=ilp32 -static -mcmodel=medany -fn
            -T test/link.ld
 
 RTL := $(shell cat sources.f)
+TB  := ulx3s/tb/models/sdram_model.sv tb/top.sv
 SIM := $(BUILD)/obj_dir/Vt
+# Extra Verilator flags for the simulator, e.g. cache shapes:
+# SIMFLAGS="-GDC_WAYS=4 -GDC_SETS=16" (tb/top.sv lists the parameters). Use a
+# separate BUILD directory per setting: changing it does not rebuild.
+SIMFLAGS ?=
+
+# Cache shapes `make cache-configs` runs every suite with (BUILD/cfg-<name>):
+# direct-mapped; 4-way; tiny caches (2 sets of 2-word lines) that evict and
+# write back all the time, set-associative and direct-mapped.
+CACHE_CONFIGS := dm 4way tiny tiny-dm
+CFG_dm        := -GIC_WAYS=1 -GDC_WAYS=1
+CFG_4way      := -GIC_WAYS=4 -GIC_SETS=16 -GDC_WAYS=4 -GDC_SETS=16
+CFG_tiny      := -GIC_SETS=2 -GIC_LINE_WORDS=2 -GDC_SETS=2 -GDC_LINE_WORDS=2
+CFG_tiny-dm   := -GIC_WAYS=1 -GIC_SETS=2 -GIC_LINE_WORDS=2 \
+                 -GDC_WAYS=1 -GDC_SETS=2 -GDC_LINE_WORDS=2
+
+VFLAGS := --timescale 1ns/1ps -Wno-DECLFILENAME
 
 RISCV_TESTS_DIR := third_party/riscv-tests/isa
 # <suite>/<test> names, e.g. rv32um/mul.
@@ -51,11 +68,11 @@ define run-tests
 done; exit $$fail
 endef
 
-.PHONY: all simulate riscv-tests priv-tests lint dasm clean
+.PHONY: all simulate riscv-tests priv-tests cache-configs lint dasm clean
 # Keep intermediate .elf files for `make dasm` and the tohost lookup.
 .SECONDARY:
 
-all: simulate riscv-tests priv-tests
+all: simulate riscv-tests priv-tests cache-configs
 
 # Run $(TEST).S with an instruction trace.
 simulate: $(SIM) $(BUILD)/$(TEST).bin
@@ -69,8 +86,14 @@ riscv-tests: $(SIM) $(RISCV_TESTS:%=$(BUILD)/isa/%.bin) $(OWN_ISA_TESTS:%=$(BUIL
 priv-tests: $(SIM) $(PRIV_TESTS:%=$(BUILD)/isa-p/%.bin) $(OWN_PRIV_TESTS:%=$(BUILD)/%.bin)
 	$(call run-tests,$(PRIV_TESTS:%=isa-p/%) $(OWN_PRIV_TESTS))
 
+# Run riscv-tests and priv-tests again for each of CACHE_CONFIGS.
+cache-configs:
+	@$(foreach c,$(CACHE_CONFIGS),echo "== caches: $(c)" && \
+	  $(MAKE) --no-print-directory riscv-tests priv-tests BUILD=$(BUILD)/cfg-$(c) \
+	    SIMFLAGS="$(CFG_$(c))" &&) true
+
 lint:
-	verilator --lint-only --timing -Wall -Wno-DECLFILENAME -f sources.f tb/top.sv --top-module t
+	verilator --lint-only --timing -Wall $(VFLAGS) tb/lint.vlt -f sources.f $(TB) --top-module t
 
 dasm: $(BUILD)/$(TEST).elf
 	$(OBJDUMP) -d $<
@@ -78,9 +101,9 @@ dasm: $(BUILD)/$(TEST).elf
 clean:
 	rm -rf $(BUILD) obj_dir
 
-$(SIM): $(RTL) tb/top.sv sources.f
+$(SIM): $(RTL) $(TB) sources.f
 	@mkdir -p $(BUILD)
-	verilator --binary -j 0 --Mdir $(BUILD)/obj_dir -o Vt -f sources.f tb/top.sv --top-module t
+	verilator --binary -j 0 $(VFLAGS) --Mdir $(BUILD)/obj_dir -o Vt $(SIMFLAGS) -f sources.f $(TB) --top-module t
 
 $(BUILD)/isa/%.elf: $(RISCV_TESTS_DIR)/%.S test/env/riscv_test.h test/link.ld
 	@mkdir -p $(@D)

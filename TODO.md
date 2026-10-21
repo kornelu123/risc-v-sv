@@ -22,6 +22,12 @@ Every step ends with a test that must pass in `make` and CI.
       and GitHub Actions
 - [x] A, Zifencei, interrupts, multi-cycle divider (step 2 below): `rv32ua`,
       `rv32ui/fence_i`, `test/isa`, `test/priv/interrupts.S`
+- [x] Split write-back I/D caches (`rtl/cache.sv`, N-way, tree-PLRU):
+      `test/isa/cache.S`, `test/priv/cache_irq.S`, every suite again in
+      `make cache-configs`
+- [x] SDRAM as main RAM: `rtl/soc.sv` = core + address decoder
+      (`rtl/bus.sv`, `rtl/memmap.sv`) + `ulx3s/rtl/sdram.sv`. Every test runs
+      against the SDRAM chip model, which checks protocol and timing.
 
 ## 1. Core: privileged basics (M-mode)
 
@@ -74,11 +80,20 @@ Every step ends with a test that must pass in `make` and CI.
       32-bit words for cache lines, open-row policy, 32/64 MB parts) and SD
       card controller (SPI mode, 512-byte blocks), each with a
       protocol/timing-checking simulation model. Not on hardware yet.
-- [ ] Attach them to the bus: SDRAM as main RAM (wait states, refresh), SD
-      card as an MMIO block device (or behind a boot ROM that loads the kernel).
-- [ ] **Memory map + bus**: replace the `mem` package with RAM and MMIO
-      modules behind an address decoder (byte enables, wait states).
-      RAM: a few MB for NOMMU, 32–64 MB for full Linux.
+- [x] Attach SDRAM as main RAM (wait states, refresh): 32 MB at
+      `0x8000_0000`, where reset starts; see `rtl/memmap.sv`. Tested in
+      simulation only.
+- [ ] SD card as an MMIO block device (or behind a boot ROM that loads the
+      kernel). Needs the uncached MMIO path below, plus a register interface
+      around `ulx3s/rtl/sd_spi.sv`: block number, start, status, and a
+      512-byte buffer or a data FIFO.
+- [ ] **Memory map + bus, MMIO**: `rtl/bus.sv` decodes RAM and answers
+      everything else with zeros. Devices need an uncached path: every access
+      goes through the write-back data cache now. That means an address
+      range the data cache passes through as single-word accesses with byte
+      enables, `memmap::in_ram` widened to cover the devices for access
+      faults, and instruction access faults for fetches outside RAM
+      (illegal instructions now).
 - [ ] **CLINT**: `mtime`, `mtimecmp`, `msip` (machine timer/software
       interrupts).
 - [ ] **UART**: ns16550a-compatible subset (THR/RBR/LSR/IER) for the console;
@@ -122,7 +137,8 @@ Every step ends with a test that must pass in `make` and CI.
 
 - [ ] C extension (most prebuilt userspaces assume it).
 - [ ] F/D for hard-float userspace (otherwise build soft-float `ilp32`).
-- [ ] FPGA: synchronous BRAM/caches, DSP multiplier, DDR controller, timing
+- [ ] FPGA: synchronous BRAM for the caches (lookups are combinational now,
+      so they map to LUT RAM), DSP multiplier, DDR controller, timing
       closure.
 - [ ] Compliance against a reference model with
       [riscv-arch-test](https://github.com/riscv-non-isa/riscv-arch-test).

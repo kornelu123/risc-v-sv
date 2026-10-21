@@ -5,6 +5,7 @@ module divider import isa::*; (
   input  logic          clk,
   input  logic          rst_n,
   input  bit            start,     // begin a / b; only acted on when idle
+  input  bit            abort,     // the division was squashed: back to idle
   input  bit            consume,   // EX takes the result and moves on
   input  operation_type op,        // ALU_DIV, ALU_DIVU, ALU_REM or ALU_REMU
   input  bit [31:0]     a,
@@ -31,7 +32,7 @@ module divider import isa::*; (
   assign shifted   = {r, q[31]};
 
   always_ff @(posedge clk) begin
-    if (!rst_n) begin
+    if (!rst_n || abort) begin
       state <= IDLE;
     end else begin
       case (state)
