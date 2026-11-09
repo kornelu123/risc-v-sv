@@ -76,6 +76,7 @@ package isa;
 
   // Exception causes (mcause, interrupt bit 31 = 0)
   localparam bit [31:0] CAUSE_MISALIGNED_FETCH = 32'd0;
+  localparam bit [31:0] CAUSE_FETCH_ACCESS     = 32'd1;
   localparam bit [31:0] CAUSE_ILLEGAL_INSTR    = 32'd2;
   localparam bit [31:0] CAUSE_BREAKPOINT       = 32'd3;
   localparam bit [31:0] CAUSE_MISALIGNED_LOAD  = 32'd4;

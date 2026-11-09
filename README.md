@@ -16,8 +16,8 @@ Classic 5-stage pipeline: IF, ID, EX, MEM, WB.
   MEM. FENCE.I writes back the data cache, invalidates the instruction cache
   and refetches.
 - Machine mode only, with precise traps: exceptions (illegal instruction,
-  ECALL, EBREAK, misaligned jump target, misaligned atomic, load/store access
-  fault), interrupts, MRET, FENCE.I and CSR instructions take effect in MEM and
+  ECALL, EBREAK, misaligned jump target, misaligned atomic, instruction access
+  fault, load/store access fault), interrupts, MRET, FENCE.I and CSR instructions take effect in MEM and
   squash everything younger. The CSRs are in `rtl/csr.sv`; the performance
   counters `mhpmcounter3–31`/`mhpmevent3–31` and `mconfigptr` read as 0.
 - Interrupts: machine software/timer/external inputs (`mip` bits 3/7/11),
@@ -40,7 +40,7 @@ cached in the SDRAM by `rtl/sd_mem.sv`. Memory map (`rtl/memmap.sv`):
 |---|---|
 | `0x1000_1000`–`0x1000_1FFF` | memory controller registers (uncached; aligned loads/stores, no atomics) |
 | `0x8000_0000`–`0x8FFF_FFFF` | main memory: 256 MB, stored on the SD card. Programs are linked here (`test/link.ld`) and reset starts here |
-| everything else | nothing. Fetches read 0 (illegal instruction); loads and stores are access faults |
+| everything else | nothing. Loads, stores and fetches there are access faults (fetches from the device windows too) |
 
 Device accesses bypass the data cache: one single-word request each. They
 can have side effects, so an interrupt waits until the access's instruction

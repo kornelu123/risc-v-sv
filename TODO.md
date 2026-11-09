@@ -92,11 +92,12 @@ Every step ends with a test that must pass in `make` and CI.
       (no background write-back, so a power cut loses unflushed data); a
       set-associative SDRAM cache would avoid the ping-pong between blocks
       32 MB apart.
-- [ ] **Memory map + bus**: main memory, the controller's registers and an
-      "answer zeros" default are decoded; devices are uncached (single-word
-      accesses with byte enables, naturally aligned, no atomics). Still
-      missing: instruction access faults for fetches outside memory
-      (illegal instructions now).
+- [x] **Memory map + bus**: main memory and the controller's registers are
+      decoded; devices are uncached (single-word accesses with byte enables,
+      naturally aligned, no atomics). Fetches outside memory, device windows
+      included, raise instruction access faults (`mcause` 1, `mtval` = pc;
+      `test/priv/fetch_fault.S`). The bus's zero answer for unmapped requests
+      only guards against core bugs. Acceptance: `make priv-tests`, `make sd-tests`.
 - [ ] **CLINT**: `mtime`, `mtimecmp`, `msip` (machine timer/software
       interrupts).
 - [ ] **UART**: ns16550a-compatible subset (THR/RBR/LSR/IER) for the console;

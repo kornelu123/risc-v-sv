@@ -4,9 +4,9 @@
 //   - Single-word requests to the register window go to rtl/sd_mem.sv's
 //     register interface, one cycle after they are accepted.
 //   - Anything else is answered here, one word per cycle: reads return
-//     zeros and writes are dropped. Only instruction refills get there (also
-//     those from the register window); the core turns other loads and stores
-//     into access faults.
+//     zeros and writes are dropped. The core checks memmap before it requests
+//     anything (loads, stores and fetches outside memory are access faults),
+//     so only a core bug reaches this.
 //
 // The core issues one burst at a time and waits for its last word, so the
 // responses of main memory and of the local responder never overlap.

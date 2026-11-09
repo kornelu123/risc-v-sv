@@ -69,10 +69,12 @@ module cu import isa::*; #(
   // ---- IF ------------------------------------------------------------------
   logic        ic_hit, ic_busy, ic_invalidate;
   logic [31:0] if_instr;
+  logic        if_mem;
 
   // ---- IF/ID ---------------------------------------------------------------
   bit         id_valid;
   bit [31:0]  id_pc, id_instr;
+  bit         id_fetch_fault;
 
   // ---- ID ------------------------------------------------------------------
   regs::reg_t id_rs1, id_rs2;
@@ -84,6 +86,7 @@ module cu import isa::*; #(
   // ---- ID/EX ---------------------------------------------------------------
   bit         ex_valid;
   bit [31:0]  ex_pc, ex_instr;
+  bit         ex_fetch_fault;
   ctrl_t      ex_ctrl;
   regs::reg_t ex_rs1, ex_rs2;
   bit [31:0]  ex_rs1_val, ex_rs2_val;
@@ -236,7 +239,10 @@ module cu import isa::*; #(
     ex_exc   = 1'b1;
     ex_cause = 32'd0;
     ex_tval  = 32'd0;
-    if (ex_ctrl.illegal) begin
+    if (ex_fetch_fault) begin
+      ex_cause = CAUSE_FETCH_ACCESS;
+      ex_tval  = ex_pc;
+    end else if (ex_ctrl.illegal) begin
       ex_cause = CAUSE_ILLEGAL_INSTR;
       ex_tval  = ex_instr;
     end else if (ex_ctrl.ecall) begin
@@ -392,11 +398,14 @@ module cu import isa::*; #(
     .mem_rsp_valid(m_rsp_valid[0]),
     .mem_rsp_rdata(m_rsp_rdata));
 
+  // Fetch outside memory is an access fault (see EX), never a bus refill.
+  assign if_mem = memmap::in_mem(regs::pc, 2'd2);
+
   // Fetch is off while sleeping in WFI.
   cache #(.WAYS(IC_WAYS), .SETS(IC_SETS), .LINE_WORDS(IC_LINE_WORDS)) icache(
     .clk(iclk),
     .rst_n(rst_n),
-    .req(!sleeping),
+    .req(!sleeping && if_mem),
     .addr(regs::pc),
     .size(2'd2),
     .we(1'b0),
@@ -555,6 +564,7 @@ module cu import isa::*; #(
         ex_rs2     <= id_rs2;
         ex_rs1_val <= id_rs1_val;
         ex_rs2_val <= id_rs2_val;
+        ex_fetch_fault <= id_fetch_fault;
       end
 
       // ---- IF -> ID and next pc --------------------------------------------
@@ -572,6 +582,15 @@ module cu import isa::*; #(
         id_valid <= 1'b0;
       end else if (load_use) begin
         // hold pc and IF/ID
+      end else if (!if_mem) begin
+        // Outside memory: nothing is fetched. The slot is an all-zero word
+        // (decodes as illegal with no side effects) marked id_fetch_fault; the
+        // trap is taken in EX and squashes everything younger, so pc advances.
+        regs::pc       <= regs::pc + 32'd4;
+        id_valid       <= 1'b1;
+        id_pc          <= regs::pc;
+        id_instr       <= 32'd0;
+        id_fetch_fault <= 1'b1;
       end else if (!ic_hit) begin
         id_valid <= 1'b0;                   // instruction cache miss: wait for the line
       end else begin
@@ -579,6 +598,7 @@ module cu import isa::*; #(
         id_valid <= 1'b1;
         id_pc    <= regs::pc;
         id_instr <= if_instr;
+        id_fetch_fault <= 1'b0;
       end
     end
   end

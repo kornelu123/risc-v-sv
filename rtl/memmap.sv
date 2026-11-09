@@ -12,8 +12,8 @@
 //
 // Devices (the I/O windows) are not cached and take naturally aligned loads
 // and stores of 1, 2 or 4 bytes, no atomics. Everything else is unmapped:
-// loads and stores there are access faults, and fetches read as 0 (an
-// illegal instruction). Fetches from devices read as 0 too.
+// loads, stores and fetches there are access faults. Fetches from the device
+// windows fault too; they never reach the bus.
 package memmap;
   localparam bit [31:0] MEM_BASE  = 32'h8000_0000;
   localparam int        MEM_BYTES = 256 * 1024 * 1024;
