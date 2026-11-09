@@ -53,13 +53,66 @@ module sd_card_model #(
 
   assign miso = cs_n ? 1'b1 : miso_r;
 
-  // Contents of never-written bytes.
+  // Contents of never-written bytes: a pattern, or zeros once a disk image
+  // is loaded (a disk image is all the card holds).
+  bit image_loaded;
+
   function automatic logic [7:0] fill(longint addr);
-    return 8'(addr * 37 + (addr >> 9));
+    return image_loaded ? 8'd0 : 8'(addr * 37 + (addr >> 9));
   endfunction
 
   function automatic logic [7:0] peek(longint addr);
     return mem.exists(addr) != 0 ? mem[addr] : fill(addr);
+  endfunction
+
+  // Write a byte without timing (testbench backdoor, e.g. to load a program).
+  function automatic void poke(longint addr, logic [7:0] d);
+    mem[addr] = d;
+  endfunction
+
+  // ---- Disk image (testbench backdoor) ------------------------------------------
+  // load_image makes a file the card's contents (byte k of the file = byte k
+  // of the card, zeros past its end); save_image writes the contents back, so
+  // data persists from one simulation to the next. Images may be large and
+  // sparse: only non-zero bytes are kept, and the saved file is as long as
+  // the loaded one or up to the last byte written, with holes where nothing
+  // was.
+  longint image_bytes;
+
+  function automatic void load_image(string path);
+    int         fd, n;
+    logic [7:0] chunk [65536];
+    fd = $fopen(path, "rb");
+    if (fd == 0) $fatal(1, "sd_card_model: cannot open %0s", path);
+    image_loaded = 1'b1;
+    image_bytes  = 0;
+    do begin
+      n = $fread(chunk, fd);
+      for (int i = 0; i < n; i++)
+        if (chunk[i] != 8'd0) mem[image_bytes + longint'(i)] = chunk[i];
+      image_bytes += longint'(n);
+    end while (n == 65536);
+    $fclose(fd);
+  endfunction
+
+  function automatic void save_image(string path);
+    int     fd;
+    longint n, a;
+    n = image_bytes;
+    if (mem.last(a) != 0 && a + 1 > n) n = a + 1;
+    fd = $fopen(path, "wb");
+    if (fd == 0) $fatal(1, "sd_card_model: cannot write %0s", path);
+    if (mem.first(a) != 0) begin
+      do begin
+        void'($fseek(fd, int'(a), 0));
+        $fwrite(fd, "%c", mem[a]);
+      end while (mem.next(a) != 0);
+    end
+    if (n > 0) begin                       // the file's full length
+      void'($fseek(fd, int'(n - 1), 0));
+      $fwrite(fd, "%c", peek(n - 1));
+    end
+    $fclose(fd);
   endfunction
 
   function automatic void fail(string msg);

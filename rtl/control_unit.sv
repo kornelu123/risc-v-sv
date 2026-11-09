@@ -30,6 +30,9 @@
 //   - FENCE.I waits in MEM until the data cache has written back every
 //     dirty line and the instruction cache is idle, then invalidates the
 //     instruction cache and refetches.
+//   - Device registers (memmap::in_io) bypass the data cache with one
+//     single-word access. Such an access cannot be repeated, so once it has
+//     gone out, interrupts wait until its instruction has completed.
 //
 // Exceptions found before MEM (illegal instruction, ECALL, EBREAK, jump to a
 // misaligned target) travel down the pipeline with their instruction. A
@@ -119,7 +122,7 @@ module cu import isa::*; #(
   bit [31:0]  ma_amo_result;
   bit         ma_do_store;     // MEM writes memory (failed SC.W does not)
   bit [31:0]  ma_wdata;
-  logic       dc_req, dc_hit, dc_dirty;
+  logic       dc_req, dc_hit, dc_dirty, dc_io_busy;
   logic [31:0] dc_rdata;       // the four bytes at ma_alu_result
   bit         ma_stall;        // MEM waits for the data cache or for FENCE.I
   bit         trap, flush;
@@ -253,9 +256,10 @@ module cu import isa::*; #(
   // write; CSRRS*/CSRRC* only write if the rs1/zimm field is not zero.
   assign ma_csr_write = ma_funct3[1:0] == FUNCT3_CSRRW[1:0] || ma_instr[19:15] != 5'd0;
 
-  // Only RAM is mapped (rtl/memmap.sv).
+  // RAM, or a device register (rtl/memmap.sv).
   assign ma_access_fault = (ma_mem_read || ma_mem_write) &&
-                           !memmap::in_ram(ma_alu_result, ma_funct3[1:0]);
+                           !memmap::access_ok(ma_alu_result, ma_funct3[1:0],
+                                              ma_lr || ma_sc || ma_amo);
 
   // ---- A extension -----------------------------------------------------------
   // AMOs read and write the data cache in the same MEM cycle (combinational
@@ -308,11 +312,13 @@ module cu import isa::*; #(
   // Trap decision for the instruction in MEM. An interrupt is taken on that
   // instruction before it executes (mepc points at it, so it runs after
   // MRET); then exceptions found earlier, then the ones only MEM can detect.
+  // Once a device access has gone out it cannot be repeated, so interrupts
+  // wait until its instruction has completed.
   always_comb begin
     trap       = ma_valid;
     trap_cause = ma_cause;
     trap_tval  = ma_tval;
-    if (irq) begin
+    if (irq && !dc_io_busy) begin
       trap_cause = irq_cause;
       trap_tval  = 32'd0;
     end else if (ma_exc) begin
@@ -333,13 +339,14 @@ module cu import isa::*; #(
 
   // ==== Caches ==============================================================
   // The data cache sees the accesses that reach memory: no exception found
-  // earlier or in MEM, and not a failing SC.W (nothing to read or write). The
-  // store itself only happens if the instruction commits.
-  assign dc_req = ma_valid && !ma_exc && !ma_atomic_misaligned && !ma_access_fault &&
+  // earlier or in MEM, and not a failing SC.W (nothing to read or write). A
+  // trapping instruction (only an interrupt is possible here) makes no
+  // request: device accesses start as soon as they are requested.
+  assign dc_req = ma_valid && !trap && !ma_exc && !ma_atomic_misaligned && !ma_access_fault &&
                   ((ma_mem_read && !ma_sc) || ma_do_store);
 
-  // A trap (only an interrupt is possible here) is taken even while MEM
-  // waits; the cache finishes its refill on its own.
+  // An interrupt is taken even while MEM waits for a refill (the cache
+  // finishes it on its own), but not during a device access.
   assign ma_stall = ma_valid && !trap &&
                     ((dc_req && !dc_hit) || (ma_fence_i && (dc_dirty || ic_busy)));
 
@@ -362,7 +369,7 @@ module cu import isa::*; #(
     .req(dc_req),
     .addr(ma_alu_result),
     .size(ma_funct3[1:0]),
-    .we(ma_do_store && !trap),
+    .we(ma_do_store),
     .wdata(ma_wdata),
     .hit(dc_hit),
     .rdata(dc_rdata),
@@ -372,6 +379,8 @@ module cu import isa::*; #(
     // verilator lint_off PINCONNECTEMPTY
     .busy(),
     // verilator lint_on PINCONNECTEMPTY
+    .uncached(memmap::in_io(ma_alu_result)),
+    .io_busy(dc_io_busy),
     .mem_req_valid(m_req_valid[0]),
     .mem_req_ready(m_req_ready[0]),
     .mem_req_we(m_req_we[0]),
@@ -400,6 +409,10 @@ module cu import isa::*; #(
     .dirty(),                   // never written
     // verilator lint_on PINCONNECTEMPTY
     .busy(ic_busy),
+    .uncached(1'b0),
+    // verilator lint_off PINCONNECTEMPTY
+    .io_busy(),
+    // verilator lint_on PINCONNECTEMPTY
     .mem_req_valid(m_req_valid[1]),
     .mem_req_ready(m_req_ready[1]),
     .mem_req_we(m_req_we[1]),

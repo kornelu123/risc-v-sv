@@ -11,7 +11,7 @@ CFLAGS  := -march=rv32ima_zicsr_zifencei -mabi=ilp32 -static -mcmodel=medany -fn
            -T test/link.ld
 
 RTL := $(shell cat sources.f)
-TB  := ulx3s/tb/models/sdram_model.sv tb/top.sv
+TB  := ulx3s/tb/models/sdram_model.sv ulx3s/tb/models/sd_card_model.sv tb/top.sv
 SIM := $(BUILD)/obj_dir/Vt
 # Extra Verilator flags for the simulator, e.g. cache shapes:
 # SIMFLAGS="-GDC_WAYS=4 -GDC_SETS=16" (tb/top.sv lists the parameters). Use a
@@ -68,11 +68,11 @@ define run-tests
 done; exit $$fail
 endef
 
-.PHONY: all simulate riscv-tests priv-tests cache-configs lint dasm clean
+.PHONY: all simulate riscv-tests priv-tests sd-tests cache-configs lint dasm clean
 # Keep intermediate .elf files for `make dasm` and the tohost lookup.
 .SECONDARY:
 
-all: simulate riscv-tests priv-tests cache-configs
+all: simulate riscv-tests priv-tests sd-tests cache-configs
 
 # Run $(TEST).S with an instruction trace.
 simulate: $(SIM) $(BUILD)/$(TEST).bin
@@ -86,6 +86,22 @@ riscv-tests: $(SIM) $(RISCV_TESTS:%=$(BUILD)/isa/%.bin) $(OWN_ISA_TESTS:%=$(BUIL
 priv-tests: $(SIM) $(PRIV_TESTS:%=$(BUILD)/isa-p/%.bin) $(OWN_PRIV_TESTS:%=$(BUILD)/%.bin)
 	$(call run-tests,$(PRIV_TESTS:%=isa-p/%) $(OWN_PRIV_TESTS))
 
+# Main memory on the SD card (test/sd/persist.S): boot from an image holding
+# just the program, then again from the image the first run left behind,
+# without loading anything else. Each boot counts itself in boot_count and
+# flushes, so the image must end with boot_count = 2.
+SD_DIR := $(BUILD)/test/sd
+sd-tests: $(SIM) $(SD_DIR)/persist.bin
+	@rm -f $(SD_DIR)/persist.img && cp $(SD_DIR)/persist.bin $(SD_DIR)/persist.img && \
+	  truncate -s 64K $(SD_DIR)/persist.img
+	@if $(SIM) $(call sim-args,$(SD_DIR)/persist.elf) +sd_image=$(SD_DIR)/persist.img \
+	     > $(SD_DIR)/persist-boot1.log 2>&1 && \
+	   $(SIM) +tohost=$(call sym,$(SD_DIR)/persist.elf,tohost) +sd_image=$(SD_DIR)/persist.img \
+	     > $(SD_DIR)/persist-boot2.log 2>&1 && \
+	   [ "$$(od -A n -t u4 -N 4 -j $$(( 0x$(call sym,$(SD_DIR)/persist.elf,boot_count) - 0x80000000 )) \
+	         $(SD_DIR)/persist.img | tr -d ' ')" = 2 ]; \
+	then echo "PASS  test/sd/persist"; \
+	else echo "FAIL  test/sd/persist  ($(SD_DIR)/persist-boot*.log)"; exit 1; fi
 # Run riscv-tests and priv-tests again for each of CACHE_CONFIGS.
 cache-configs:
 	@$(foreach c,$(CACHE_CONFIGS),echo "== caches: $(c)" && \
@@ -110,6 +126,10 @@ $(BUILD)/isa/%.elf: $(RISCV_TESTS_DIR)/%.S test/env/riscv_test.h test/link.ld
 	$(CC) $(CFLAGS) -I test/env -I $(RISCV_TESTS_DIR)/macros/scalar -o $@ $<
 
 $(BUILD)/test/isa/%.elf: test/isa/%.S test/env/riscv_test.h test/link.ld
+	@mkdir -p $(@D)
+	$(CC) $(CFLAGS) -I test/env -I $(RISCV_TESTS_DIR)/macros/scalar -o $@ $<
+
+$(BUILD)/test/sd/%.elf: test/sd/%.S test/env/riscv_test.h test/link.ld
 	@mkdir -p $(@D)
 	$(CC) $(CFLAGS) -I test/env -I $(RISCV_TESTS_DIR)/macros/scalar -o $@ $<
 

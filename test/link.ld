@@ -2,7 +2,7 @@ ENTRY(_start)
 
 SECTIONS
 {
-  . = 0x80000000;   /* memmap::RAM_BASE: the start of RAM, where reset begins */
+  . = 0x80000000;   /* memmap::MEM_BASE: the start of main memory, where reset begins */
 
   .text : {
     *(.text.init)

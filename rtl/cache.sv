@@ -20,6 +20,13 @@
 // valid; `dirty` falls once none is left. `invalidate` drops every line in
 // one cycle and is only allowed while the cache is neither `busy` nor
 // `dirty`.
+//
+// Uncached accesses (`uncached` with `req`, for device registers) bypass the
+// lines: one single-word memory request with byte strobes, naturally aligned
+// only. It starts as soon as it is requested (a store with `we`) and cannot
+// be taken back. `hit` then rises for one cycle with the read data, and the
+// caller must take it. `io_busy` covers the whole access, so the caller can
+// hold off anything that would abandon it, such as an interrupt.
 module cache #(
   parameter int WAYS       = 2,    // power of two
   parameter int SETS       = 64,   // power of two, >= 2
@@ -44,6 +51,8 @@ module cache #(
   input  logic        clean,
   output logic        dirty,        // some line differs from memory
   output logic        busy,         // a refill or write-back is under way
+  input  logic        uncached,
+  output logic        io_busy,      // an uncached access started and is not yet taken
 
   output logic        mem_req_valid,
   input  logic        mem_req_ready,
@@ -81,25 +90,25 @@ module cache #(
   // Node n has children 2n and 2n+1; leaves WAYS..2*WAYS-1 are the ways. A
   // node bit set means the least recently used half is the right one.
   // (Functions assign their result to their own name, for yosys.)
-  function automatic way_t plru_victim(logic [WAYS-1:0] t);
+  function automatic way_t plru_victim(logic [WAYS-1:0] tree);
     int node;
     node = 1;
-    for (int l = 0; l < LEVELS; l++) node = 2 * node + int'(t[node]);
+    for (int l = 0; l < LEVELS; l++) node = 2 * node + int'(tree[node]);
     plru_victim = way_t'(node - WAYS);
   endfunction
 
-  function automatic logic [WAYS-1:0] plru_touch(logic [WAYS-1:0] t, way_t way);
+  function automatic logic [WAYS-1:0] plru_touch(logic [WAYS-1:0] tree, way_t way);
     int node;
     node = 1;
     for (int l = LEVELS - 1; l >= 0; l--) begin
-      t[node] = !way[l];                      // point away from the used way
-      node    = 2 * node + int'(way[l]);
+      tree[node] = !way[l];                   // point away from the used way
+      node       = 2 * node + int'(way[l]);
     end
-    plru_touch = t;
+    plru_touch = tree;
   endfunction
 
   // ---- Lookup ----------------------------------------------------------------
-  typedef enum logic [1:0] { IDLE, WRITEBACK, FILL } state_t;
+  typedef enum logic [1:0] { IDLE, WRITEBACK, FILL, IO } state_t;
 
   state_t           state;
   idx_t             vic_set;       // line being written back or refilled
@@ -109,6 +118,13 @@ module cache #(
   logic             sent;          // the memory request was accepted
   off_t             cnt;           // words transferred
   logic [LINE_BITS-1:0] scan;      // next line `clean` looks at
+  logic             lhit;          // the lines hold every byte of the access
+  logic             io_we;         // uncached access: write?
+  logic [29:0]      io_addr;
+  logic [31:0]      io_wdata;
+  logic [3:0]       io_strb;
+  logic             io_done;       // finished; `hit` for this cycle
+  logic [31:0]      io_data;       // the word it read
 
   logic [29:0]      wa     [2];    // the (up to) two words of the access
   idx_t             set    [2];
@@ -142,8 +158,10 @@ module cache #(
       word[k] = data_q[set[k]][way[k]][off[k]];
     end
 
-    hit   = |match[0] && (!two || |match[1]);
-    rdata = 32'({word[1], word[0]} >> {addr[1:0], 3'b000});
+    lhit  = |match[0] && (!two || |match[1]);
+    hit   = uncached ? io_done : lhit;
+    rdata = uncached ? io_data >> {addr[1:0], 3'b000}
+                     : 32'({word[1], word[0]} >> {addr[1:0], 3'b000});
 
     // A miss refills the first missing word's line, into an invalid way if
     // the set has one, else the PLRU way.
@@ -172,15 +190,25 @@ module cache #(
     for (int s = 0; s < SETS; s++) dirty |= |dirty_q[s];
   end
 
-  assign busy = state != IDLE;
+  assign busy    = state != IDLE;
+  assign io_busy = state == IO || io_done;
 
   // ---- Memory requests -------------------------------------------------------
-  assign mem_req_valid = busy && !sent;
-  assign mem_req_we    = state == WRITEBACK;
-  assign mem_req_addr  = {state == WRITEBACK ? tag_q[vic_set][vic_way] : fill_tag, vic_set, off_t'(0)};
-  assign mem_req_len   = 3'(LINE_WORDS - 1);
-  assign mem_req_wdata = data_q[vic_set][vic_way][cnt];
-  assign mem_req_wstrb = 4'hF;
+  always_comb begin
+    mem_req_valid = busy && !sent;
+    mem_req_we    = state == WRITEBACK;
+    mem_req_addr  = {state == WRITEBACK ? tag_q[vic_set][vic_way] : fill_tag, vic_set, off_t'(0)};
+    mem_req_len   = 3'(LINE_WORDS - 1);
+    mem_req_wdata = data_q[vic_set][vic_way][cnt];
+    mem_req_wstrb = 4'hF;
+    if (state == IO) begin
+      mem_req_we    = io_we;
+      mem_req_addr  = io_addr;
+      mem_req_len   = 3'd0;
+      mem_req_wdata = io_wdata;
+      mem_req_wstrb = io_strb;
+    end
+  end
 
   // Next line for `clean` to look at.
   idx_t scan_set;
@@ -190,10 +218,11 @@ module cache #(
 
   always_ff @(posedge clk) begin
     if (!rst_n) begin
-      state <= IDLE;
-      sent  <= 1'b0;
-      cnt   <= '0;
-      scan  <= '0;
+      state   <= IDLE;
+      sent    <= 1'b0;
+      cnt     <= '0;
+      scan    <= '0;
+      io_done <= 1'b0;
       for (int s = 0; s < SETS; s++) begin
         valid_q[s] <= '0;
         dirty_q[s] <= '0;
@@ -207,7 +236,7 @@ module cache #(
 
       // A hit: write the bytes and mark both words' lines as used. (A
       // two-word access inside one line touches the same way twice.)
-      if (req && hit) begin
+      if (req && !uncached && lhit) begin
         for (int k = 0; k < 2; k++) begin
           if (k == 0 || two) begin
             plru_q[set[k]] <= plru_touch(plru_q[set[k]], way[k]);
@@ -219,11 +248,19 @@ module cache #(
         end
       end
 
+      io_done <= 1'b0;                        // taken in the cycle it is set
+
       case (state)
         IDLE: begin
           sent <= 1'b0;
           cnt  <= '0;
-          if (req && !hit) begin
+          if (req && uncached && !io_done) begin
+            io_we    <= we;
+            io_addr  <= addr[31:2];
+            io_wdata <= wdata2[31:0];
+            io_strb  <= wmask[3:0];
+            state    <= IO;
+          end else if (req && !uncached && !lhit) begin
             vic_set  <= set[mk];
             vic_way  <= vway;
             fill_tag <= tag[mk];
@@ -272,6 +309,16 @@ module cache #(
               valid_q[vic_set][vic_way] <= 1'b1;
               state <= IDLE;
             end
+          end
+        end
+
+        IO: begin
+          if (mem_req_valid && mem_req_ready) sent <= 1'b1;
+          if (io_we ? mem_wr_ready : mem_rsp_valid) begin
+            io_data <= mem_rsp_rdata;
+            io_done <= 1'b1;
+            sent    <= 1'b0;
+            state   <= IDLE;
           end
         end
 

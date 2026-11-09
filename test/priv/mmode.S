@@ -95,6 +95,16 @@ RVTEST_CODE_BEGIN
   TEST_CASE(31, a0, UNMAPPED, la t0, 1f; csrrw s6, mtvec, t0; li t1, UNMAPPED; \
                               jr t1; 1: csrw mtvec, s6; csrr a0, mepc)
 
+  # Devices take naturally aligned accesses only and no atomics; next to a
+  # device window nothing is mapped. (Memory controller registers at 0x10001000.)
+  li a0, 0x10001002
+  expect_trap 32, CAUSE_LOAD_ACCESS,  0x10001002, lw a1, 0(a0)
+  li a0, 0x10001000
+  expect_trap 33, CAUSE_STORE_ACCESS, 0x10001000, amoadd.w a1, a1, (a0)
+  expect_trap 34, CAUSE_LOAD_ACCESS,  0x10001000, lr.w a1, (a0)
+  li a0, 0x10002000
+  expect_trap 35, CAUSE_STORE_ACCESS, 0x10002000, sw a1, 0(a0)
+
   TEST_PASSFAIL
 
   .align 2

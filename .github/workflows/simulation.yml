@@ -33,6 +33,9 @@ jobs:
       - name: Run machine-mode tests (rv32mi, test/priv)
         run: make priv-tests
 
+      - name: Main memory on the SD card persists (test/sd, two boots)
+        run: make sd-tests
+
       - name: Run both suites with other cache shapes (direct-mapped, 4-way, tiny)
         run: make cache-configs
 
@@ -49,6 +52,7 @@ jobs:
             build/isa-p/**/*.log
             build/test/priv/*.log
             build/test/isa/*.log
+            build/test/sd/*.log
             build/cfg-*/isa/**/*.log
             build/cfg-*/isa-p/**/*.log
             build/cfg-*/test/priv/*.log

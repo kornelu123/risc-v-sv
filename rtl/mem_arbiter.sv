@@ -32,11 +32,16 @@ module mem_arbiter (
   logic       owner;       // ... for this master
   logic       busy_we;
   logic [3:0] left;        // words still to transfer
+  logic       waiting;     // a request was presented and not yet taken ...
+  logic       waiting_m;   // ... from this master: it stays connected
   logic       cur;         // master connected to the port
   logic       we;          // the connected transfer is a write
   logic       beat;        // a word is transferred this cycle
 
-  assign cur = busy ? owner : !m_req_valid[0];
+  // A presented request stays unchanged until it is taken (the masters hold
+  // theirs), so a request from master 0 cannot replace one from master 1
+  // that the memory side has already started to look at.
+  assign cur = busy ? owner : waiting ? waiting_m : !m_req_valid[0];
   assign we  = busy ? busy_we : m_req_we[cur];
 
   assign req_valid = !busy && m_req_valid[cur];
@@ -60,8 +65,11 @@ module mem_arbiter (
 
   always_ff @(posedge clk) begin
     if (!rst_n) begin
-      busy <= 1'b0;
+      busy    <= 1'b0;
+      waiting <= 1'b0;
     end else if (!busy) begin
+      waiting   <= req_valid && !req_ready;
+      waiting_m <= cur;
       // Words of a burst may already come in the cycle it is accepted.
       if (req_valid && req_ready && {1'b0, req_len} + 4'd1 != 4'(beat)) begin
         busy    <= 1'b1;

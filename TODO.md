@@ -25,9 +25,13 @@ Every step ends with a test that must pass in `make` and CI.
 - [x] Split write-back I/D caches (`rtl/cache.sv`, N-way, tree-PLRU):
       `test/isa/cache.S`, `test/priv/cache_irq.S`, every suite again in
       `make cache-configs`
-- [x] SDRAM as main RAM: `rtl/soc.sv` = core + address decoder
-      (`rtl/bus.sv`, `rtl/memmap.sv`) + `ulx3s/rtl/sdram.sv`. Every test runs
-      against the SDRAM chip model, which checks protocol and timing.
+- [x] Main memory on the SD card: 256 MB at `0x8000_0000` stored on the
+      card, cached in the SDRAM in 512-byte blocks (`rtl/sd_mem.sv`, around
+      `ulx3s/rtl/sdram.sv` and `ulx3s/rtl/sd_spi.sv`), FLUSH to sync; the
+      system boots from the card. `rtl/soc.sv` = core + address decoder
+      (`rtl/bus.sv`, `rtl/memmap.sv`) + `rtl/sd_mem.sv`. Every test runs
+      against the SDRAM and SD card models (protocol and timing checks);
+      `make sd-tests` boots twice from one disk image.
 
 ## 1. Core: privileged basics (M-mode)
 
@@ -80,19 +84,18 @@ Every step ends with a test that must pass in `make` and CI.
       32-bit words for cache lines, open-row policy, 32/64 MB parts) and SD
       card controller (SPI mode, 512-byte blocks), each with a
       protocol/timing-checking simulation model. Not on hardware yet.
-- [x] Attach SDRAM as main RAM (wait states, refresh): 32 MB at
-      `0x8000_0000`, where reset starts; see `rtl/memmap.sv`. Tested in
-      simulation only.
-- [ ] SD card as an MMIO block device (or behind a boot ROM that loads the
-      kernel). Needs the uncached MMIO path below, plus a register interface
-      around `ulx3s/rtl/sd_spi.sv`: block number, start, status, and a
-      512-byte buffer or a data FIFO.
-- [ ] **Memory map + bus, MMIO**: `rtl/bus.sv` decodes RAM and answers
-      everything else with zeros. Devices need an uncached path: every access
-      goes through the write-back data cache now. That means an address
-      range the data cache passes through as single-word accesses with byte
-      enables, `memmap::in_ram` widened to cover the devices for access
-      faults, and instruction access faults for fetches outside RAM
+- [x] Attach the SDRAM and the SD card: the card is main memory, the SDRAM
+      a direct-mapped cache of it (README "Main memory on the SD card").
+      Tested in simulation only.
+- [ ] Memory: the card's capacity is not checked (`sd_spi.sv` does not read
+      the CSD register); evictions only write back on a miss or on FLUSH
+      (no background write-back, so a power cut loses unflushed data); a
+      set-associative SDRAM cache would avoid the ping-pong between blocks
+      32 MB apart.
+- [ ] **Memory map + bus**: main memory, the controller's registers and an
+      "answer zeros" default are decoded; devices are uncached (single-word
+      accesses with byte enables, naturally aligned, no atomics). Still
+      missing: instruction access faults for fetches outside memory
       (illegal instructions now).
 - [ ] **CLINT**: `mtime`, `mtimecmp`, `msip` (machine timer/software
       interrupts).
@@ -114,6 +117,12 @@ Every step ends with a test that must pass in `make` and CI.
       `configs/buildroot_config`); initramfs built into the kernel.
 - [ ] Boot to a shell in simulation. Expect slow Verilator runs; add a
       `+max_cycles` large enough and a UART-only (no trace) mode.
+- [ ] Linux and the persistent memory: the kernel sees 256 MB of ordinary
+      RAM (device tree `memory` node). It must call FENCE.I + FLUSH to sync
+      (e.g. on `sync`/shutdown), or nothing reaches the card. A root
+      filesystem has to live inside that memory (e.g. a RAM-disk region the
+      kernel does not otherwise use). Every first touch of a block costs
+      ~0.35 ms, and dirty evictions wear the card.
 
 ## 5. Core + SoC: S/U modes and MMU
 
