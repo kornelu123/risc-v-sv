@@ -3,6 +3,7 @@
 
 #include "riscv_test.h"
 #include "test_macros.h"
+#include "expect_trap.h"
 
 # Address that no memory or device will ever answer in this SoC.
 #define UNMAPPED 0x40000000
@@ -10,20 +11,6 @@
 RVTEST_RV32M
 RVTEST_CODE_BEGIN
 
-  # The instruction in `insn` (exactly one) must trap with this mcause and
-  # mtval, with mepc pointing at it. mtvec_handler below records the trap
-  # in s2..s5 and resumes after the instruction.
-  .macro expect_trap testnum, cause, tval, insn:vararg
-    li   TESTNUM, \testnum
-    li   s2, -1
-1:  \insn
-    li   t0, \cause
-    bne  s2, t0, fail
-    li   t0, \tval
-    bne  s3, t0, fail
-    la   t0, 1b
-    bne  s4, t0, fail
-  .endm
 
   # misa: MXL = 1 (RV32), I and M present.
   TEST_CASE( 2, a0, 0x40001100, csrr a0, misa; li a1, 0xC0001100; and a0, a0, a1)

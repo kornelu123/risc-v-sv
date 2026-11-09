@@ -50,6 +50,7 @@ module cu import isa::*; #(
   input  logic        irq_software,   // machine software interrupt (mip.MSIP)
   input  logic        irq_timer,      // machine timer interrupt (mip.MTIP)
   input  logic        irq_external,   // machine external interrupt (mip.MEIP)
+  input  logic [63:0] mtime,         // the CLINT's time counter (time/timeh CSRs)
 
   // Memory: the request interface of ulx3s/rtl/sdram.sv, word addresses.
   output logic        mem_req_valid,
@@ -311,6 +312,7 @@ module cu import isa::*; #(
            .irq_software(irq_software),
            .irq_timer(irq_timer),
            .irq_external(irq_external),
+           .mtime(mtime),
            .irq(irq),
            .irq_cause(irq_cause),
            .wake(wake));

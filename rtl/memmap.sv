@@ -1,5 +1,7 @@
 // Physical memory map.
 //
+//   0x0200_0000 - 0x0200_FFFF  core-local interruptor (rtl/clint.sv)
+//   0x1000_0000 - 0x1000_00FF  UART (rtl/uart.sv)
 //   0x1000_1000 - 0x1000_1FFF  memory controller registers (rtl/sd_mem.sv)
 //   0x8000_0000 - 0x8FFF_FFFF  main memory: 256 MB, stored on the SD card
 //
@@ -22,6 +24,12 @@ package memmap;
   localparam bit [31:0] CTRL_BASE  = 32'h1000_1000;
   localparam int        CTRL_BYTES = 4096;
 
+  localparam bit [31:0] CLINT_BASE  = 32'h0200_0000;
+  localparam int        CLINT_BYTES = 64 * 1024;
+
+  localparam bit [31:0] UART_BASE  = 32'h1000_0000;
+  localparam int        UART_BYTES = 256;
+
   // True if a load/store of 2**width bytes at addr lies inside main memory.
   function automatic bit in_mem(bit [31:0] addr, bit [1:0] width);
     return addr - MEM_BASE <= 32'(MEM_BYTES) - (32'd1 << width);
@@ -29,7 +37,8 @@ package memmap;
 
   // True if addr is in a device window (uncached).
   function automatic bit in_io(bit [31:0] addr);
-    return addr - CTRL_BASE < 32'(CTRL_BYTES);
+    return addr - CTRL_BASE < 32'(CTRL_BYTES) || addr - CLINT_BASE < 32'(CLINT_BYTES) ||
+           addr - UART_BASE < 32'(UART_BYTES);
   endfunction
 
   // True if a load/store (atomic or not) of 2**width bytes at addr reaches

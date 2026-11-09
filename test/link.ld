@@ -23,7 +23,11 @@ SECTIONS
   }
 
   .bss : {
+    . = ALIGN(4);
+    __bss_start = .;
     *(.bss .bss.* .sbss .sbss.* COMMON)
+    . = ALIGN(4);
+    __bss_end = .;
   }
 
   /DISCARD/ : {

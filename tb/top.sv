@@ -14,16 +14,15 @@
 //                       flush (rtl/sd_mem.sv). Without an image the card holds
 //                       the model's fill pattern and nothing is saved.
 //   +tohost=<hex>       address of `tohost` (the Makefile reads it from the ELF)
-//   +irq=<hex>          address of the program's `irq_lines` word, if any. Bits
-//                       3/7/11 drive the software/timer/external interrupt
-//                       inputs (mip layout), standing in for the CLINT/PLIC.
-//                       Bits 31:16 delay a new value by that many cycles, so
-//                       an interrupt can arrive while the core sleeps in WFI.
+//   +irq=<hex>          address of the program's `irq_lines` word, if any. Bit 11
+//                       drives the machine external interrupt (MEIP), standing in
+//                       for the PLIC. (Timer and software interrupts: rtl/clint.sv.)
 //   +max_cycles=<n>     timeout (default 4000000), counted from reset; the
 //                       card's initialisation takes the first ~150000
 //   +trace              print one line per retired instruction
 // `tohost` and `irq_lines` are read as the program sees them: from the data
 // cache, else the SDRAM if it holds the block, else the card.
+// The bytes the program sends to the UART (rtl/uart.sv) are printed on stdout.
 //
 // Parameters (verilator -G...): the cache shapes (see rtl/cache.sv).
 module t import memmap::*; #(
@@ -46,9 +45,7 @@ module t import memmap::*; #(
   bit [31:0] tohost;
   bit [31:0] irq_addr;
   bit        irq_en;
-  bit        irq_sw, irq_tm, irq_ex;
-  bit [31:0] irq_seen;       // last value read from irq_lines
-  int        irq_delay;      // cycles until irq_seen is applied
+  bit        irq_ex;
   bit [31:0] result;
   int        max_cycles;
 
@@ -58,21 +55,22 @@ module t import memmap::*; #(
   logic [1:0]  ba, dqm;
   logic [15:0] dq_o, chip_dq;
   logic        sd_sck, sd_mosi, sd_cs_n, sd_miso;
+  logic        uart_tx_valid;
+  logic [7:0]  uart_tx_data;
 
   soc #(.IC_WAYS(IC_WAYS), .IC_SETS(IC_SETS), .IC_LINE_WORDS(IC_LINE_WORDS),
         .DC_WAYS(DC_WAYS), .DC_SETS(DC_SETS), .DC_LINE_WORDS(DC_LINE_WORDS),
         .CLK_MHZ(50), .SDRAM_BYTES(SDRAM_BYTES)) s(
     .clk,
     .rst_n,
-    .irq_software(irq_sw),
-    .irq_timer(irq_tm),
     .irq_external(irq_ex),
     .sdram_ready,
     .mem_ready,
     .sdram_cke(cke), .sdram_csn(csn), .sdram_rasn(rasn), .sdram_casn(casn),
     .sdram_wen(wen), .sdram_a(a), .sdram_ba(ba), .sdram_dqm(dqm),
     .dq_o, .dq_oe, .dq_i(chip_dq),
-    .sd_sck, .sd_mosi, .sd_cs_n, .sd_miso);
+    .sd_sck, .sd_mosi, .sd_cs_n, .sd_miso,
+    .uart_tx_valid, .uart_tx_data);
 
   sd_card_model card(.sck(sd_sck), .mosi(sd_mosi), .cs_n(sd_cs_n), .miso(sd_miso));
 
@@ -83,6 +81,10 @@ module t import memmap::*; #(
     // verilator lint_off PINCONNECTEMPTY
     .dq_out_en());
     // verilator lint_on PINCONNECTEMPTY
+
+  // Console: the bytes the program sends to the UART.
+  always @(posedge clk)
+    if (uart_tx_valid) $write("%c", uart_tx_data);
 
   // ---- Backdoor access ------------------------------------------------------------
   // SDRAM word w is the chip's {row, bank, column} = w, two 16-bit columns.
@@ -128,17 +130,10 @@ module t import memmap::*; #(
 
   always @(negedge clk) begin
     /* verilator lint_off UNUSEDSIGNAL */
-    bit [31:0] w;      // bits 31:16 delay, bits 3/7/11 interrupt lines
+    bit [31:0] w;      // only bit 11, the external interrupt line, is used
     /* verilator lint_on UNUSEDSIGNAL */
     w = irq_en ? word_at(irq_addr) : 32'd0;
-    if (w != irq_seen) begin
-      irq_seen  <= w;
-      irq_delay <= int'(w[31:16]);
-    end else if (irq_delay != 0) begin
-      irq_delay <= irq_delay - 1;
-    end else begin
-      {irq_ex, irq_tm, irq_sw} <= {irq_seen[11], irq_seen[7], irq_seen[3]};
-    end
+    irq_ex <= w[11];
   end
 
   initial begin

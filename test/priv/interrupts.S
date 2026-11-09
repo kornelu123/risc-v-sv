@@ -1,19 +1,46 @@
-# Machine-mode interrupts. The testbench drives the software, timer and
-# external interrupt inputs from bits 3/7/11 of `irq_lines` (the mip bit
-# layout), standing in for the CLINT and PLIC.
+# Machine-mode interrupts. The timer and software interrupts come from the
+# CLINT (mtimecmp and msip, rtl/clint.sv). The external interrupt is driven by
+# the testbench from bit 11 of `irq_lines` (standing in for the PLIC).
 
 #include "riscv_test.h"
 #include "test_macros.h"
 
+  # CLINT registers (rtl/clint.sv). mtime and mtimecmp are 64-bit: lo, then hi.
+  .equ MSIP,     0x02000000
+  .equ MTIMECMP, 0x02004000
+  .equ MTIME,    0x0200BFF8
+
 RVTEST_RV32M
 RVTEST_CODE_BEGIN
 
-  # Set the interrupt lines; the core sees the change a cycle later.
+  # Set the software, timer and external lines; the core sees the change a
+  # cycle later. The timer line is mtimecmp = 0 (pending) or all ones.
   .macro set_lines bits
-    li   t0, \bits
+    li   t1, MSIP
+    li   t0, ((\bits) >> 3) & 1
+    sw   t0, 0(t1)
+    li   t1, MTIMECMP
+    li   t0, (((\bits) >> 7) & 1) - 1
+    sw   t0, 4(t1)
+    sw   t0, 0(t1)
+    li   t0, (\bits) & MIP_MEIP
     sw   t0, irq_lines, t1
     nop
     nop
+  .endm
+
+  # Timer interrupt `delay` cycles from now: mtimecmp = mtime + delay. The
+  # high half is disarmed first, so a stale low half cannot fire early.
+  .macro timer_in delay
+    li   t1, MTIMECMP
+    li   t0, -1
+    sw   t0, 4(t1)
+    li   t1, MTIME
+    lw   t0, 0(t1)
+    addi t0, t0, \delay
+    li   t1, MTIMECMP
+    sw   t0, 0(t1)
+    sw   zero, 4(t1)
   .endm
 
   li   s3, 0                     # number of interrupts taken
@@ -68,10 +95,14 @@ irq_window_end:
   # Priority: external > software > timer. The handler lowers every line,
   # so only the first interrupt is taken.
   li   s3, 0
+  csrci mstatus, MSTATUS_MIE    # raise the lines with MIE clear, or the first write traps alone
   set_lines MIP_MSIP | MIP_MTIP | MIP_MEIP
+  csrsi mstatus, MSTATUS_MIE
   TEST_CASE(13, s2, 0x8000000b, nop; nop; nop; nop)
   TEST_CASE(14, s3, 1, )
+  csrci mstatus, MSTATUS_MIE
   set_lines MIP_MSIP | MIP_MTIP
+  csrsi mstatus, MSTATUS_MIE
   TEST_CASE(15, s2, 0x80000003, nop; nop; nop; nop)
 
   # WFI with an interrupt pending but MIE = 0 does not hang.
@@ -88,8 +119,7 @@ irq_window_end:
   # that does not wait would reach wfi_next before the interrupt arrives.
   csrsi mstatus, MSTATUS_MIE
   li   s3, 0
-  li   t0, (200 << 16) | MIP_MTIP
-  sw   t0, irq_lines, t1
+  timer_in 200
   wfi
 wfi_next:
   mv   a0, s3
@@ -97,14 +127,13 @@ wfi_next:
   TEST_CASE(19, a1, 0, la t0, wfi_next; sub a1, s4, t0)
 
   # With MIE = 0, WFI still wakes up when an enabled interrupt becomes pending
-  # and continues without a trap.
+  # and continues without a trap. Elapsed time is read from the time CSR (mtime).
   csrci mstatus, MSTATUS_MIE
   li   s3, 0
-  csrr s6, mcycle
-  li   t0, (200 << 16) | MIP_MTIP
-  sw   t0, irq_lines, t1
+  csrr s6, time
+  timer_in 200
   wfi
-  csrr a1, mcycle
+  csrr a1, time
   TEST_CASE(20, a0, 0, sub a1, a1, s6; sltiu a0, a1, 200)   # slept >= 200 cycles
   TEST_CASE(21, s3, 0, )
   TEST_CASE(22, a0, MIP_MTIP, csrr a0, mip; andi a0, a0, MIP_MTIP)
@@ -116,11 +145,10 @@ wfi_next:
   li   t0, MIP_MTIP
   csrw mie, t0
   set_lines MIP_MSIP
-  csrr s6, mcycle
-  li   t0, (200 << 16) | MIP_MSIP | MIP_MTIP
-  sw   t0, irq_lines, t1
+  csrr s6, time
+  timer_in 200
   wfi
-  csrr a1, mcycle
+  csrr a1, time
   TEST_CASE(23, a0, 0, sub a1, a1, s6; sltiu a0, a1, 200)   # slept >= 200 cycles
   set_lines 0
 
@@ -133,7 +161,13 @@ mtvec_handler:
   bgez s2, fail                  # only interrupts are expected
   csrr s4, mepc
   csrr s5, mstatus
-  sw   zero, irq_lines, t5       # lower every line
+  li   t5, MSIP                  # lower every line
+  sw   zero, 0(t5)
+  li   t5, MTIMECMP
+  li   t6, -1
+  sw   t6, 4(t5)
+  sw   t6, 0(t5)
+  sw   zero, irq_lines, t5
   addi s3, s3, 1
   mret
 

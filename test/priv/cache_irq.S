@@ -1,5 +1,5 @@
-# Interrupts while MEM waits for the data cache. Each round raises the timer
-# interrupt after a different delay while a loop runs AMOs that miss in the
+# Interrupts while MEM waits for the data cache. Each round arms the CLINT
+# timer to fire after a different delay while a loop runs AMOs that miss in the
 # data cache (each on a new line), each followed by an independent division,
 # which runs in EX meanwhile. The interrupt is taken on the waiting AMO in
 # some rounds. Then the AMO must happen exactly once (after MRET), and the
@@ -10,6 +10,10 @@
 
 #define ROUNDS 48
 #define ITERS  4
+
+# CLINT registers (rtl/clint.sv): mtime and mtimecmp are 64-bit, lo then hi.
+.equ MTIMECMP, 0x02004000
+.equ MTIME,    0x0200BFF8
 
 RVTEST_RV32M
 RVTEST_CODE_BEGIN
@@ -39,9 +43,14 @@ RVTEST_CODE_BEGIN
 
   li   s10, 0                    # this round's delay
 round:
-  slli t0, s10, 16
-  ori  t0, t0, MIP_MTIP
-  sw   t0, irq_lines, t1
+  li   t1, MTIMECMP
+  li   t0, -1
+  sw   t0, 4(t1)                # disarm while the low half changes
+  li   t2, MTIME
+  lw   t0, 0(t2)
+  add  t0, t0, s10
+  sw   t0, 0(t1)
+  sw   zero, 4(t1)
   li   s11, ITERS
 1:
   amoadd.w zero, s9, (s0)
@@ -73,7 +82,10 @@ round:
 mtvec_handler:
   csrr t5, mcause
   bgez t5, fail                  # only interrupts are expected
-  sw   zero, irq_lines, t5       # lower every line
+  li   t5, MTIMECMP             # disarm the timer
+  li   t6, -1
+  sw   t6, 4(t5)
+  sw   t6, 0(t5)
   li   t5, 91
   li   t6, 7
   div  t5, t5, t6
@@ -89,9 +101,6 @@ RVTEST_CODE_END
 RVTEST_DATA_BEGIN
 
   TEST_DATA
-  .align 2
-  .globl irq_lines
-irq_lines: .word 0
 
 RVTEST_DATA_END
 

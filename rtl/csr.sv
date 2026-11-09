@@ -22,6 +22,7 @@ module csr import isa::*; (
   input  bit         irq_software,
   input  bit         irq_timer,
   input  bit         irq_external,
+  input  bit [63:0]  mtime,       // the CLINT's time counter (time/timeh CSRs)
   output bit         irq,         // an enabled interrupt is pending and MIE = 1
   output bit [31:0]  irq_cause,
   output bit         wake         // an enabled interrupt is pending (any MIE): ends WFI
@@ -49,11 +50,11 @@ module csr import isa::*; (
       CSR_MTVAL:     rdata = mtval;
       CSR_MIP:       rdata = mip;
       CSR_MCYCLE,
-      CSR_CYCLE,
-      CSR_TIME:      rdata = mcycle[31:0];
+      CSR_CYCLE:     rdata = mcycle[31:0];
+      CSR_TIME:      rdata = mtime[31:0];
       CSR_MCYCLEH,
-      CSR_CYCLEH,
-      CSR_TIMEH:     rdata = mcycle[63:32];
+      CSR_CYCLEH:    rdata = mcycle[63:32];
+      CSR_TIMEH:     rdata = mtime[63:32];
       CSR_MINSTRET,
       CSR_INSTRET:   rdata = minstret[31:0];
       CSR_MINSTRETH,

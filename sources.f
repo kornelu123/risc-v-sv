@@ -9,6 +9,8 @@ rtl/cache.sv
 rtl/mem_arbiter.sv
 rtl/control_unit.sv
 rtl/bus.sv
+rtl/clint.sv
+rtl/uart.sv
 ulx3s/rtl/sdram.sv
 ulx3s/rtl/sd_spi.sv
 rtl/sd_mem.sv
