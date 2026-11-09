@@ -6,9 +6,9 @@ CC      := $(RISCV_PREFIX)gcc
 OBJCOPY := $(RISCV_PREFIX)objcopy
 OBJDUMP := $(RISCV_PREFIX)objdump
 NM      := $(RISCV_PREFIX)nm
-CFLAGS  := -march=rv32ima_zicsr_zifencei -mabi=ilp32 -static -mcmodel=medany -fno-pie -no-pie \
-           -nostdlib -nostartfiles -Wl,--build-id=none -Wl,--no-warn-rwx-segments \
-           -T test/link.ld
+CFLAGS_BARE := -march=rv32ima_zicsr_zifencei -mabi=ilp32 -static -mcmodel=medany -fno-pie -no-pie \
+           -nostdlib -nostartfiles -Wl,--build-id=none -Wl,--no-warn-rwx-segments
+CFLAGS := $(CFLAGS_BARE) -T test/link.ld
 
 RTL := $(shell cat sources.f)
 TB  := ulx3s/tb/models/sdram_model.sv ulx3s/tb/models/sd_card_model.sv tb/top.sv
@@ -53,7 +53,7 @@ OWN_PRIV_TESTS := $(basename $(wildcard test/priv/*.S))
 sym = $$($(NM) $(1) | awk '$$3 == "$(2)" { print $$1 }')
 
 # Testbench arguments for ELF $(1): the image, the `tohost` word, and the
-# optional `irq_lines` word that drives the interrupt inputs.
+# optional `irq_lines` word that drives the external interrupt input.
 sim-args = +bin=$(1:.elf=.bin) +tohost=$(call sym,$(1),tohost) \
            $$(a=$(call sym,$(1),irq_lines); [ -n "$$a" ] && echo +irq=$$a)
 
@@ -68,11 +68,11 @@ define run-tests
 done; exit $$fail
 endef
 
-.PHONY: all simulate riscv-tests priv-tests sd-tests cache-configs lint dasm clean
+.PHONY: all simulate riscv-tests priv-tests sd-tests boot-tests smoke-tests cache-configs lint dasm dtb clean
 # Keep intermediate .elf files for `make dasm` and the tohost lookup.
 .SECONDARY:
 
-all: simulate riscv-tests priv-tests sd-tests cache-configs
+all: simulate riscv-tests priv-tests sd-tests boot-tests smoke-tests cache-configs dtb
 
 # Run $(TEST).S with an instruction trace.
 simulate: $(SIM) $(BUILD)/$(TEST).bin
@@ -85,6 +85,15 @@ riscv-tests: $(SIM) $(RISCV_TESTS:%=$(BUILD)/isa/%.bin) $(OWN_ISA_TESTS:%=$(BUIL
 # Run the machine-mode tests.
 priv-tests: $(SIM) $(PRIV_TESTS:%=$(BUILD)/isa-p/%.bin) $(OWN_PRIV_TESTS:%=$(BUILD)/%.bin)
 	$(call run-tests,$(PRIV_TESTS:%=isa-p/%) $(OWN_PRIV_TESTS))
+
+# Boot (boot/boot.S): the stub enters a stand-in for the kernel with a0 = hart
+# id and a1 = the DTB address (test/boot/kernel.S).
+boot-tests: $(SIM) $(BUILD)/test/boot/kernel.bin
+	$(call run-tests,test/boot/kernel)
+
+# Bare-metal C program (test/smoke/smoke.c): UART output and timer interrupts.
+smoke-tests: $(SIM) $(BUILD)/test/smoke/smoke.bin
+	$(call run-tests,test/smoke/smoke)
 
 # Main memory on the SD card (test/sd/persist.S): boot from an image holding
 # just the program, then again from the image the first run left behind,
@@ -114,6 +123,14 @@ lint:
 dasm: $(BUILD)/$(TEST).elf
 	$(OBJDUMP) -d $<
 
+# Device tree blob for the SoC (boot/risc-v-sv.dts), passed to the kernel in a1.
+DTB := $(BUILD)/boot/risc-v-sv.dtb
+dtb: $(DTB)
+
+$(DTB): boot/risc-v-sv.dts
+	@mkdir -p $(@D)
+	dtc -I dts -O dtb -o $@ $<
+
 clean:
 	rm -rf $(BUILD) obj_dir
 
@@ -140,6 +157,14 @@ $(BUILD)/isa-p/%.elf: $(RISCV_TESTS_DIR)/%.S $(RISCV_ENV_P)/riscv_test.h test/li
 $(BUILD)/test/priv/%.elf: test/priv/%.S $(RISCV_ENV_P)/riscv_test.h test/link.ld
 	@mkdir -p $(@D)
 	$(CC) $(CFLAGS) -I $(RISCV_ENV_P) -I $(RISCV_TESTS_DIR)/macros/scalar -o $@ $<
+
+$(BUILD)/test/boot/%.elf: boot/boot.S test/boot/%.S boot/boot.ld $(DTB)
+	@mkdir -p $(@D)
+	$(CC) $(CFLAGS_BARE) -T boot/boot.ld -DDTB_FILE='"$(DTB)"' -o $@ boot/boot.S test/boot/$*.S
+
+$(BUILD)/test/smoke/%.elf: test/smoke/start.S test/smoke/%.c test/link.ld
+	@mkdir -p $(@D)
+	$(CC) $(CFLAGS) -O2 -ffreestanding -o $@ test/smoke/start.S test/smoke/$*.c
 
 $(RISCV_ENV_P)/riscv_test.h:
 	$(error $@ is missing; run: git submodule update --init --recursive)

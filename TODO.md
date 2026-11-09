@@ -47,7 +47,7 @@ Every step ends with a test that must pass in `make` and CI.
       `mtval`, `mie`, `mip`.
 - [x] `wfi` (see step 2: it now sleeps).
 - [x] **Zicntr**: `cycle/time/instret` (+ `cycleh/timeh/instreth` on RV32).
-      `time` mirrors `mcycle` until the CLINT (step 3) provides `mtime`.
+      `time` and `timeh` read the CLINT's `mtime`.
 - [x] `mhpmcounter3–31` (+`h`), `mhpmevent3–31`: read-only 0 (writes ignored),
       as the spec allows; `mconfigptr` reads 0 (no configuration structure).
       Acceptance: `test/priv/mmode.S` tests 21–30.
@@ -68,8 +68,8 @@ Every step ends with a test that must pass in `make` and CI.
       Acceptance: `rv32ui/fence_i`, `test/isa/fence_i.S` (stale instructions
       already in the pipeline).
 - [x] **Interrupts**: timer, software and external interrupts via `mie/mip`,
-      taken at the commit stage like exceptions. The inputs come from the
-      testbench (`irq_lines`) until the CLINT/PLIC in step 3.
+      taken at the commit stage like exceptions. Timer and software come from
+      the CLINT; the external input comes from the testbench (`irq_lines`) until the PLIC.
       Acceptance: `test/priv/interrupts.S`.
 - [x] Iterative divider with an EX stall instead of combinational `/` and `%`
       (needed for FPGA timing, not for correctness).
@@ -87,28 +87,30 @@ Every step ends with a test that must pass in `make` and CI.
 - [x] Attach the SDRAM and the SD card: the card is main memory, the SDRAM
       a direct-mapped cache of it (README "Main memory on the SD card").
       Tested in simulation only.
-- [ ] Memory: the card's capacity is not checked (`sd_spi.sv` does not read
-      the CSD register); evictions only write back on a miss or on FLUSH
-      (no background write-back, so a power cut loses unflushed data); a
-      set-associative SDRAM cache would avoid the ping-pong between blocks
-      32 MB apart.
+- [ ] Memory: evictions only write back on a miss or on FLUSH (no background
+      write-back, so a power cut loses unflushed data); a set-associative
+      SDRAM cache would avoid the ping-pong between blocks 32 MB apart.
 - [x] **Memory map + bus**: main memory and the controller's registers are
       decoded; devices are uncached (single-word accesses with byte enables,
       naturally aligned, no atomics). Fetches outside memory, device windows
       included, raise instruction access faults (`mcause` 1, `mtval` = pc;
       `test/priv/fetch_fault.S`). The bus's zero answer for unmapped requests
       only guards against core bugs. Acceptance: `make priv-tests`, `make sd-tests`.
-- [ ] **CLINT**: `mtime`, `mtimecmp`, `msip` (machine timer/software
-      interrupts).
-- [ ] **UART**: ns16550a-compatible subset (THR/RBR/LSR/IER) for the console;
-      the testbench prints transmitted characters.
-- [ ] **Device tree** (`.dts`): CPU (`riscv,isa-base`, `riscv,isa-extensions`),
-      memory, CLINT, UART, `chosen/stdout-path`.
-- [ ] **Boot**: load kernel `Image` + DTB into RAM; enter with `a0` = hart id,
-      `a1` = DTB address. RV32 kernels must sit at a 4 MB-aligned address
-      (docs.kernel.org/arch/riscv/boot.html).
-- [ ] Bare-metal smoke test: C program printing over the UART with timer
-      interrupts.
+- [x] **CLINT**: `mtime`, `mtimecmp`, `msip` (machine timer/software
+      interrupts). Acceptance: `test/priv/clint.S`, `test/priv/interrupts.S`.
+- [x] **UART**: ns16550a-compatible subset (THR/RBR/IER/IIR/LCR/MCR/LSR/MSR/SCR,
+      DLAB divisor latch) for the console; the testbench prints transmitted
+      characters. Acceptance: `test/priv/uart.S`.
+- [x] **Device tree** (`boot/risc-v-sv.dts`, `make dtb`): CPU (`riscv,isa-base`,
+      `riscv,isa-extensions`), memory, CLINT, UART, `chosen/stdout-path`.
+      Acceptance: `make dtb` compiles it with no warnings.
+- [x] **Boot** (`boot/boot.S`, `boot/boot.ld`): reset runs a stub that enters the
+      kernel at 0x8040_0000 (4 MB-aligned) with `a0` = hart id and `a1` = DTB
+      address (0x8010_0000); both are linked into the image. Acceptance:
+      `make boot-tests`, where `test/boot/kernel.S` stands in for the kernel and
+      checks `a0`, `a1`, and the FDT magic. The real Linux Image replaces it in step 4.
+- [x] Bare-metal smoke test (`test/smoke/smoke.c`): C program printing over the UART
+      and taking three machine timer interrupts. Acceptance: `make smoke-tests`.
 
 ## 4. Milestone: NOMMU Linux
 

@@ -20,11 +20,11 @@ Classic 5-stage pipeline: IF, ID, EX, MEM, WB.
   fault, load/store access fault), interrupts, MRET, FENCE.I and CSR instructions take effect in MEM and
   squash everything younger. The CSRs are in `rtl/csr.sv`; the performance
   counters `mhpmcounter3–31`/`mhpmevent3–31` and `mconfigptr` read as 0.
-- Interrupts: machine software/timer/external inputs (`mip` bits 3/7/11),
-  priority external > software > timer. WFI stops fetching until an
-  interrupt enabled in `mie` is pending. The testbench drives the inputs from
-  a program's `irq_lines` word (bits 31:16 delay a new value by that many
-  cycles) until a CLINT/PLIC exists.
+- Interrupts: machine software and timer interrupts come from the CLINT (`mip`
+  bits 3 and 7); the external one (bit 11) comes from the testbench, which
+  drives it from bit 11 of a program's `irq_lines` word until there is a PLIC.
+  Priority external > software > timer. WFI stops fetching until an
+  interrupt enabled in `mie` is pending.
 
 Tests report their result through a `tohost` word in memory, the riscv-tests
 convention: 1 = pass, `(failing test number << 1) | 1` = fail. The testbench
@@ -39,8 +39,16 @@ cached in the SDRAM by `rtl/sd_mem.sv`. Memory map (`rtl/memmap.sv`):
 | Range | Device |
 |---|---|
 | `0x1000_1000`–`0x1000_1FFF` | memory controller registers (uncached; aligned loads/stores, no atomics) |
+| `0x0200_0000`–`0x0200_FFFF` | CLINT (`rtl/clint.sv`): msip at `0x0000`, mtimecmp at `0x4000`, mtime at `0xBFF8`; each 64-bit value is a low and a high word (uncached) |
+| `0x1000_0000`–`0x1000_00FF` | UART (`rtl/uart.sv`): ns16550a register subset, transmit only; the testbench prints each byte sent (uncached) |
 | `0x8000_0000`–`0x8FFF_FFFF` | main memory: 256 MB, stored on the SD card. Programs are linked here (`test/link.ld`) and reset starts here |
 | everything else | nothing. Loads, stores and fetches there are access faults (fetches from the device windows too) |
+
+`mtime` advances once per core cycle (50 MHz); the `time` and `timeh` CSRs read it.
+
+The device tree (`boot/risc-v-sv.dts`) describes this map for the kernel; `make dtb` builds it.
+
+Reset runs `boot/boot.S` at 0x8000_0000. It enters the kernel at 0x8040_0000 with `a0` = hart id and `a1` = the DTB address 0x8010_0000; `boot/boot.ld` lays out the three. `test/boot/kernel.S` stands in for the kernel until there is a Linux build.
 
 Device accesses bypass the data cache: one single-word request each. They
 can have side effects, so an interrupt waits until the access's instruction
@@ -80,8 +88,8 @@ only in the SDRAM or the data cache is lost at power-off, so software syncs:
 | `0x004` | FLUSH (write anything) |
 
 Without a usable card, misses leave memory contents undefined and set
-ERROR. The card's capacity is not checked (`sd_spi.sv` does not read the CSD
-register): it must hold at least 256 MB.
+ERROR. A card smaller than 256 MB fails initialisation (INIT_ERROR): the
+capacity comes from the CSD register (CMD9).
 
 The testbench (`tb/top.sv`) wires the SoC to the SD card model
 `ulx3s/tb/models/sd_card_model.sv` and the SDRAM chip model
@@ -143,7 +151,10 @@ evictions). Cache-specific tests: `test/isa/cache.S` and
     make riscv-tests   # rv32ui, rv32um, rv32ua + test/isa/*.S
     make priv-tests    # machine-mode tests: rv32mi + test/priv/*.S (TODO.md step 1)
     make sd-tests      # boot twice from one SD card image: memory persists
-    make               # simulate + riscv-tests + priv-tests + sd-tests + cache-configs
+    make boot-tests    # boot stub -> stand-in kernel: a0, a1 and the DTB (test/boot/kernel.S)
+    make smoke-tests   # bare-metal C program: UART output and three timer interrupts (test/smoke/smoke.c)
+    make dtb           # device tree blob (build/boot/risc-v-sv.dtb)
+    make               # simulate + riscv-tests + priv-tests + sd-tests + boot-tests + smoke-tests + cache-configs + dtb
     make cache-configs # both suites again with other cache shapes
     make lint
     make dasm          # disassemble test/test.S
