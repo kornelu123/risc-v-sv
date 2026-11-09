@@ -12,7 +12,7 @@ BUILD_TMP := $(CURDIR)/$(BUILD)/tmp
 
 # <name>: top module, sources, parameters.
 TESTS := sdram sdram_64mb_cl3_25mhz sdram_cl3_60mhz sdram_slow_timing \
-         sd_sdhc sd_sdsc sd_v1 sd_init_fail
+         sd_sdhc sd_sdsc sd_v1 sd_init_fail sd_too_small
 
 SDRAM_SRCS := rtl/sdram.sv tb/models/sdram_model.sv tb/tb_sdram.sv
 SD_SRCS    := rtl/sd_spi.sv tb/models/sd_card_model.sv tb/tb_sd_spi.sv
@@ -44,6 +44,9 @@ PARAMS_sd_v1              := -GCARD=2
 TOP_sd_init_fail          := tb_sd_spi
 SRCS_sd_init_fail         := $(SD_SRCS)
 PARAMS_sd_init_fail       := -GCARD=3
+TOP_sd_too_small           := tb_sd_spi
+SRCS_sd_too_small          := $(SD_SRCS)
+PARAMS_sd_too_small        := -GCARD=4
 
 RTL := rtl/sdram.sv rtl/sd_spi.sv
 

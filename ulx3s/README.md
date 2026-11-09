@@ -73,7 +73,8 @@ sdram #(.CLK_MHZ(50)) ram (
 
 SPI mode, the simplest mode every SD card supports. After reset it
 initialises the card on its own at 400 kHz (≥ 74 clocks, CMD0, CMD8,
-CMD55+ACMD41, CMD58, CMD16 for standard-capacity cards), then switches to
+CMD55+ACMD41, CMD58, CMD16 for standard-capacity cards), then reads the CSD
+(CMD9) and rejects a card smaller than `MIN_BLOCKS` (`init_error`), switches to
 `FAST_HZ` (12.5 MHz by default, ~1.5 MB/s) and raises `ready`. SDHC/SDXC
 (block addressing), SDSC v2 and SD v1 cards are handled.
 

@@ -11,6 +11,7 @@ module sd_card_model #(
   parameter int  NCR         = 1,     // 0xFF bytes before a command response (1..8)
   parameter int  NAC         = 4,     // 0xFF bytes before a read start token
   parameter int  BUSY_BYTES  = 6,     // busy (0x00) bytes after a write
+  parameter int  CAPACITY_MB = 1024,  // CSD capacity (SDSC v1: at most 1024)
   parameter real INIT_MIN_PERIOD_NS = 2500.0,  // 400 kHz
   parameter real FAST_MIN_PERIOD_NS = 40.0     // 25 MHz
 ) (
@@ -123,9 +124,9 @@ module sd_card_model #(
     if (!ok) fail(msg);
   endfunction
 
-  function automatic logic [6:0] crc7(logic [39:0] d);
+  function automatic logic [6:0] crc7(logic [119:0] d);
     logic [6:0] c = '0;
-    for (int i = 39; i >= 0; i--) c = {c[5:0], 1'b0} ^ ((c[6] ^ d[i]) ? 7'h09 : 7'h00);
+    for (int i = 119; i >= 0; i--) c = {c[5:0], 1'b0} ^ ((c[6] ^ d[i]) ? 7'h09 : 7'h00);
     return c;
   endfunction
 
@@ -146,6 +147,24 @@ module sd_card_model #(
     return longint'(arg);
   endfunction
 
+  // The CSD register: CSD v2 for SDHC, CSD v1 otherwise (SDSC v2 cards use v1).
+  function automatic logic [127:0] csd_bits();
+    logic [127:0] c = '0;
+    if (SDHC) begin
+      c[127:126] = 2'b01;
+      c[69:48]   = 22'(2 * CAPACITY_MB - 1);      // C_SIZE in 512 KB units
+    end else begin
+      need(CAPACITY_MB <= 1024, "SDSC v1 capacity above 1024 MB");
+      c[127:126] = 2'b00;
+      c[83:80]   = 4'd9;                          // READ_BL_LEN: 512 bytes
+      c[73:62]   = 12'(4 * CAPACITY_MB - 1);      // C_SIZE in 256 KB units
+      c[49:47]   = 3'd7;                          // C_SIZE_MULT 7: 2^9 units
+    end
+    c[7:1] = crc7(c[127:8]);
+    c[0]   = 1'b1;
+    return c;
+  endfunction
+
   // ---- Commands -------------------------------------------------------------------
   function automatic void process_cmd();
     logic [5:0]  idx = cmd[0][5:0];
@@ -153,8 +172,8 @@ module sd_card_model #(
     logic [7:0]  idle = {7'd0, !ready};
 
     need(cmd[5][0] == 1'b1, "command end bit is 0");
-    need(cmd[5][7:1] == crc7({cmd[0], arg}),
-         $sformatf("CMD%0d CRC7 %02h, expected %02h", idx, cmd[5][7:1], crc7({cmd[0], arg})));
+    need(cmd[5][7:1] == crc7(120'({cmd[0], arg})),
+         $sformatf("CMD%0d CRC7 %02h, expected %02h", idx, cmd[5][7:1], crc7(120'({cmd[0], arg}))));
     if (!spi_mode) begin
       need(idx == 6'd0, $sformatf("CMD%0d before CMD0", idx));
       need(pre_clocks >= 74, $sformatf("only %0d init clocks before CMD0", pre_clocks));
@@ -211,6 +230,20 @@ module sd_card_model #(
         need(SDHC || arg == 32'd512, "block length other than 512");
         blocklen_set = 1'b1;
         respond_r1(8'h00);
+      end
+      6'd9: begin
+        logic [127:0] csd = csd_bits();
+        logic [15:0]  crc = '0;
+        need(ready, "CMD9 before initialisation");
+        respond_r1(8'h00);
+        repeat (NAC) tx_q.push_back(8'hFF);
+        tx_q.push_back(8'hFE);
+        for (int i = 15; i >= 0; i--) begin
+          tx_q.push_back(csd[8 * i +: 8]);
+          crc = crc16(crc, csd[8 * i +: 8]);
+        end
+        tx_q.push_back(crc[15:8]);
+        tx_q.push_back(crc[7:0]);
       end
       6'd17: begin
         logic [15:0] crc = '0;

@@ -3,8 +3,9 @@
 //
 // After reset it initialises the card on its own at INIT_HZ: >= 74 clocks,
 // CMD0, CMD8 (v1/v2 detection), CMD55 + ACMD41 until ready, CMD58 (block or
-// byte addressing), CMD16(512) for byte-addressed cards, then switches SCK to
-// FAST_HZ and raises `ready` (or `init_error`).
+// byte addressing), CMD16(512) for byte-addressed cards, CMD9 (the CSD, with
+// its capacity checked against MIN_BLOCKS), then switches SCK to FAST_HZ and
+// raises `ready` (or `init_error`).
 //
 // Block access, 512 bytes, one at a time:
 //   read:  pulse rd_start with `block`; the bytes arrive on rd_data/rd_valid.
@@ -22,7 +23,8 @@ module sd_spi #(
   parameter int ACMD41_TRIES     = 2500,    // about 1 s at 400 kHz
   parameter int CMD0_TRIES       = 16,
   parameter int READ_TIMEOUT_MS  = 100,
-  parameter int WRITE_TIMEOUT_MS = 500
+  parameter int WRITE_TIMEOUT_MS = 500,
+  parameter int MIN_BLOCKS       = 0      // smaller cards fail initialisation
 ) (
   input  logic        clk,
   input  logic        rst_n,
@@ -80,6 +82,19 @@ module sd_spi #(
       crc16 = {crc16[14:0], 1'b0} ^ ((crc16[15] ^ d[i]) ? 16'h1021 : 16'h0000);
   endfunction
 
+  // Capacity in 512-byte blocks from the CSD register: CSD v2 (SDHC/SDXC)
+  // counts 512 KB units, CSD v1 (SDSC) counts 2^(C_SIZE_MULT+2) * 2^READ_BL_LEN
+  // byte units. Zero for an unknown CSD structure.
+  /* verilator lint_off UNUSEDSIGNAL */   // only the fields below are read
+  function automatic logic [63:0] csd_blocks(logic [127:0] c);
+    csd_blocks = '0;
+    if (c[127:126] == 2'b01)
+      csd_blocks = (64'(c[69:48]) + 64'd1) << 10;
+    else if (c[127:126] == 2'b00)
+      csd_blocks = (64'(c[73:62]) + 64'd1) << (64'(c[49:47]) + 64'd2 + 64'(c[83:80]) - 64'd9);
+  endfunction
+  /* verilator lint_on UNUSEDSIGNAL */
+
   // ---- Byte shifter (SPI mode 0, MSB first) -------------------------------------
   // MOSI changes while SCK is low; MISO is sampled on the rising SCK edge.
   logic          fast;
@@ -136,7 +151,8 @@ module sd_spi #(
     S_CMD_PRE, S_CMD_FRAME, S_CMD_R1, S_CMD_EXTRA,   // command subroutine
     S_DESELECT,
     S_CMD0, S_CMD0_CHK, S_CMD8, S_CMD8_CHK, S_CMD55, S_CMD55_CHK, S_ACMD41,
-    S_ACMD41_CHK, S_CMD58, S_CMD58_CHK, S_CMD16, S_CMD16_CHK, S_INIT_DONE,
+    S_ACMD41_CHK, S_CMD58, S_CMD58_CHK, S_CMD16, S_CMD16_CHK, S_CMD9, S_CMD9_CHK,
+    S_CSD_TOKEN, S_CSD_DATA, S_CSD_CRC, S_CSD_CHECK, S_INIT_DONE,
     S_INIT_FAIL, S_IDLE,
     S_RD_R1, S_RD_TOKEN, S_RD_DATA, S_RD_CRC,
     S_WR_R1, S_WR_GAP, S_WR_TOKEN, S_WR_DATA, S_WR_CRC, S_WR_RESP, S_WR_BUSY,
@@ -159,6 +175,7 @@ module sd_spi #(
   logic [7:0]    r1;
   /* verilator lint_off UNUSEDSIGNAL */
   logic [31:0]   resp;                // R3 (OCR) / R7 bytes; not every field is used
+  logic [127:0]  csd;                 // CSD register (CMD9): not every field is used
   /* verilator lint_on UNUSEDSIGNAL */
   logic [15:0]   crc;
   logic [7:0]    crc_hi;              // first CRC16 byte of a read block
@@ -191,6 +208,7 @@ module sd_spi #(
     case (state)
       S_CLOCKS, S_CMD_PRE, S_CMD_FRAME, S_CMD_R1, S_CMD_EXTRA, S_DESELECT,
       S_RD_TOKEN, S_RD_DATA, S_RD_CRC, S_WR_GAP, S_WR_TOKEN, S_WR_CRC,
+      S_CSD_TOKEN, S_CSD_DATA, S_CSD_CRC,
       S_WR_RESP, S_WR_BUSY: byte_state = 1'b1;
       default:              byte_state = 1'b0;
     endcase
@@ -325,14 +343,52 @@ module sd_spi #(
           // OCR: bit 31 = power-up done (CCS is only valid then), bit 30 = CCS.
           if (r1_ok && r1 == 8'h00 && resp[31]) begin
             sdhc <= resp[30];
-            deselect(resp[30] ? S_INIT_DONE : S_CMD16);
+            deselect(resp[30] ? S_CMD9 : S_CMD16);
           end else begin
             fail_init();
           end
         S_CMD16:  issue(6'd16, 32'd512, 1'b0, S_CMD16_CHK);
         S_CMD16_CHK:
-          if (r1_ok && r1 == 8'h00) deselect(S_INIT_DONE);
+          if (r1_ok && r1 == 8'h00) deselect(S_CMD9);
           else                      fail_init();
+        S_CMD9:   issue(6'd9, 32'h0, 1'b0, S_CMD9_CHK);
+        S_CMD9_CHK:
+          if (r1_ok && r1 == 8'h00) begin
+            timer <= '0;
+            state <= S_CSD_TOKEN;
+          end else                  fail_init();
+        // The CSD comes as a data block: token, 16 bytes, CRC16.
+        S_CSD_TOKEN: if (xfer_done) begin
+          timer <= timer + 1'b1;
+          if (xfer_rx == 8'hFE) begin
+            cnt   <= '0;
+            crc   <= '0;
+            state <= S_CSD_DATA;
+          end else if (xfer_rx != 8'hFF || timer == TW'(READ_TIMEOUT)) begin
+            fail_init();
+          end
+        end
+        S_CSD_DATA: if (xfer_done) begin
+          csd <= {csd[119:0], xfer_rx};
+          crc <= crc16(crc, xfer_rx);
+          cnt <= cnt + 1'b1;
+          if (cnt == 10'd15) begin
+            cnt   <= '0;
+            state <= S_CSD_CRC;
+          end
+        end
+        S_CSD_CRC: if (xfer_done) begin
+          crc_hi <= xfer_rx;
+          cnt    <= cnt + 1'b1;
+          if (cnt == 10'd1) begin
+            if ({crc_hi, xfer_rx} == crc) deselect(S_CSD_CHECK);
+            else                          fail_init();
+          end
+        end
+        // The card must hold at least MIN_BLOCKS (checked with CS high).
+        S_CSD_CHECK:
+          if (csd_blocks(csd) >= 64'(MIN_BLOCKS)) state <= S_INIT_DONE;
+          else                                    fail_init();
         S_INIT_DONE: begin
           fast  <= 1'b1;
           ready <= 1'b1;

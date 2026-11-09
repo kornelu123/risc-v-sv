@@ -1,13 +1,14 @@
 // Self-checking testbench for sd_spi.sv against sd_card_model.sv. The model
 // checks the SPI-mode protocol; this testbench checks data and error reporting.
 //   CARD = 0: SDHC (block addressing), 1: SDSC v2, 2: SDSC v1 (no CMD8),
-//          3: SDHC that never finishes ACMD41 (initialisation must fail).
+//          3: SDHC that never finishes ACMD41 (initialisation must fail),
+//          4: SDHC of 512 MB, below the DUT's 1 GB minimum (must fail).
 module tb_sd_spi #(
   parameter int CARD = 0
 );
   localparam int  CLK_HZ  = 50_000_000;
   localparam real PERIOD  = 1.0e9 / CLK_HZ;
-  localparam bit  SDHC    = CARD == 0 || CARD == 3;
+  localparam bit  SDHC    = CARD == 0 || CARD == 3 || CARD == 4;
   localparam bit  V2      = CARD != 2;
 
   logic        clk = 1'b0, rst_n = 1'b0;
@@ -21,12 +22,14 @@ module tb_sd_spi #(
 
   // Short timeouts (1 ms = 1562 bytes at 12.5 MHz) so the timeout tests run quickly.
   sd_spi #(.CLK_HZ(CLK_HZ), .POWERUP_US(10), .ACMD41_TRIES(20),
-           .READ_TIMEOUT_MS(1), .WRITE_TIMEOUT_MS(1)) dut (
+           .READ_TIMEOUT_MS(1), .WRITE_TIMEOUT_MS(1),
+           .MIN_BLOCKS(2 * 1024 * 1024)) dut (
     .clk, .rst_n, .ready, .init_error, .sdhc, .rd_start, .wr_start, .block,
     .busy, .done, .error, .rd_valid, .rd_data, .wr_valid, .wr_data, .wr_ready,
     .sd_sck(sck), .sd_mosi(mosi), .sd_cs_n(cs_n), .sd_miso(miso));
 
-  sd_card_model #(.SDHC(SDHC), .V2(V2), .ACMD41_BUSY(CARD == 3 ? -1 : 5)) card (
+  sd_card_model #(.SDHC(SDHC), .V2(V2), .ACMD41_BUSY(CARD == 3 ? -1 : 5),
+                  .CAPACITY_MB(CARD == 4 ? 512 : 1024)) card (
     .sck, .mosi, .cs_n, .miso);
 
   int errors;
@@ -122,9 +125,9 @@ module tb_sd_spi #(
     rst_n = 1'b1;
     wait (ready || init_error);
 
-    if (CARD == 3) begin
+    if (CARD == 3 || CARD == 4) begin
       if (!init_error || ready) begin
-        $display("FAIL a card that never leaves ACMD41 must fail initialisation");
+        $display("FAIL an unusable card (CARD=%0d) must fail initialisation", CARD);
         errors++;
       end
     end else begin

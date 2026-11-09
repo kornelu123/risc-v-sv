@@ -24,10 +24,10 @@
 //   1  FLUSH   write anything: write every dirty block to the card
 // Other words read as 0 and ignore writes.
 //
-// Without a usable card (INIT_ERROR), misses skip the card and leave the
-// slot's contents undefined, and ERROR is set. After reset nothing is
-// served until the tags are cleared (SLOTS cycles) and, for a miss, until
-// the card is initialised.
+// Without a usable card (INIT_ERROR: no card, or one smaller than main memory),
+// misses skip the card and leave the slot's contents undefined, and ERROR is set.
+// After reset nothing is served until the tags are cleared (SLOTS cycles) and,
+// for a miss, until the card is initialised.
 module sd_mem import memmap::*; #(
   parameter int CLK_HZ          = 50_000_000,
   parameter int SDRAM_BYTES     = 32 * 1024 * 1024,
@@ -140,7 +140,7 @@ module sd_mem import memmap::*; #(
   assign wr_valid = state == WB_CARD   &&  card_started && !cnt[9];
   assign wr_data  = buf_q[cnt[8:2]][8 * cnt[1:0] +: 8];
 
-  sd_spi #(.CLK_HZ(CLK_HZ)) card(
+  sd_spi #(.CLK_HZ(CLK_HZ), .MIN_BLOCKS(MEM_BYTES / 512)) card(
     .clk, .rst_n,
     .ready(card_ready), .init_error, .sdhc,
     .rd_start, .wr_start, .block,
