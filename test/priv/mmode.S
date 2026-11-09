@@ -3,6 +3,7 @@
 
 #include "riscv_test.h"
 #include "test_macros.h"
+#include "expect_trap.h"
 
 # Address that no memory or device will ever answer in this SoC.
 #define UNMAPPED 0x40000000
@@ -10,20 +11,6 @@
 RVTEST_RV32M
 RVTEST_CODE_BEGIN
 
-  # The instruction in `insn` (exactly one) must trap with this mcause and
-  # mtval, with mepc pointing at it. mtvec_handler below records the trap
-  # in s2..s5 and resumes after the instruction.
-  .macro expect_trap testnum, cause, tval, insn:vararg
-    li   TESTNUM, \testnum
-    li   s2, -1
-1:  \insn
-    li   t0, \cause
-    bne  s2, t0, fail
-    li   t0, \tval
-    bne  s3, t0, fail
-    la   t0, 1b
-    bne  s4, t0, fail
-  .endm
 
   # misa: MXL = 1 (RV32), I and M present.
   TEST_CASE( 2, a0, 0x40001100, csrr a0, misa; li a1, 0xC0001100; and a0, a0, a1)
@@ -74,6 +61,36 @@ RVTEST_CODE_BEGIN
   # A store behind a trapping instruction is squashed.
   TEST_CASE(20, a0, 0, la a2, tdat; sw zero, 0(a2); li a1, 1; la t0, 1f; \
                        csrrw s6, mtvec, t0; .word 0; sw a1, 0(a2); 1: csrw mtvec, s6; lw a0, 0(a2))
+
+  # Performance counters and event selectors: read-only 0, writes ignored.
+  TEST_CASE(21, a0, 0, li a0, -1; csrw mhpmcounter3, a0; csrr a0, mhpmcounter3)
+  TEST_CASE(22, a0, 0, li a0, -1; csrw mhpmcounter31h, a0; csrr a0, mhpmcounter31h)
+  TEST_CASE(23, a0, 0, li a0, -1; csrw mhpmevent3, a0; csrr a0, mhpmevent3)
+  TEST_CASE(24, a0, 0, li a0, -1; csrw mhpmevent31, a0; csrr a0, mhpmevent31)
+  # mconfigptr (0xf15) exists, reads 0 (no configuration structure) and is
+  # read-only.
+  TEST_CASE(25, a0, 0, li a0, -1; csrr a0, 0xf15)
+  expect_trap 26, CAUSE_ILLEGAL_INSTRUCTION, 0xf1501073, .word 0xf1501073  # csrrw x0, mconfigptr, x0
+  # Just outside those ranges there are no CSRs.
+  expect_trap 27, CAUSE_ILLEGAL_INSTRUCTION, 0xb0102573, .word 0xb0102573  # csrr a0, 0xb01
+  expect_trap 28, CAUSE_ILLEGAL_INSTRUCTION, 0xb2002573, .word 0xb2002573  # csrr a0, 0xb20
+  expect_trap 29, CAUSE_ILLEGAL_INSTRUCTION, 0x32202573, .word 0x32202573  # csrr a0, 0x322
+  expect_trap 30, CAUSE_ILLEGAL_INSTRUCTION, 0xf1602573, .word 0xf1602573  # csrr a0, 0xf16
+
+  # A jump outside RAM: the fetch traps as an access fault with mepc = the
+  # target. Straight to label 1.
+  TEST_CASE(31, a0, UNMAPPED, la t0, 1f; csrrw s6, mtvec, t0; li t1, UNMAPPED; \
+                              jr t1; 1: csrw mtvec, s6; csrr a0, mepc)
+
+  # Devices take naturally aligned accesses only and no atomics; next to a
+  # device window nothing is mapped. (Memory controller registers at 0x10001000.)
+  li a0, 0x10001002
+  expect_trap 32, CAUSE_LOAD_ACCESS,  0x10001002, lw a1, 0(a0)
+  li a0, 0x10001000
+  expect_trap 33, CAUSE_STORE_ACCESS, 0x10001000, amoadd.w a1, a1, (a0)
+  expect_trap 34, CAUSE_LOAD_ACCESS,  0x10001000, lr.w a1, (a0)
+  li a0, 0x10002000
+  expect_trap 35, CAUSE_STORE_ACCESS, 0x10002000, sw a1, 0(a0)
 
   TEST_PASSFAIL
 

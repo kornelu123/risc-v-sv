@@ -2,7 +2,7 @@ ENTRY(_start)
 
 SECTIONS
 {
-  . = 0x0;
+  . = 0x80000000;   /* memmap::MEM_BASE: the start of main memory, where reset begins */
 
   .text : {
     *(.text.init)
@@ -23,7 +23,11 @@ SECTIONS
   }
 
   .bss : {
+    . = ALIGN(4);
+    __bss_start = .;
     *(.bss .bss.* .sbss .sbss.* COMMON)
+    . = ALIGN(4);
+    __bss_end = .;
   }
 
   /DISCARD/ : {

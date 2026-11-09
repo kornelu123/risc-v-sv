@@ -165,9 +165,44 @@ module decoder import isa::*; (
       end
 
       // FENCE orders memory between harts/devices; with one in-order hart and
-      // a single memory it is a no-op.
+      // a single memory it is a no-op. FENCE.I makes older stores visible to
+      // instruction fetch: MEM flushes and refetches after it.
       OPCODE_MISC_MEM: begin
-        if (funct3 != FUNCT3_FENCE) ctrl.illegal = 1'b1;
+        case (funct3)
+          FUNCT3_FENCE:   ;
+          FUNCT3_FENCE_I: ctrl.fence_i = 1'b1;
+          default:        ctrl.illegal = 1'b1;
+        endcase
+      end
+
+      // A extension. The address is rs1 (ALU: rs1 + 0); MEM does the access.
+      // All three kinds produce rd in MEM, so they count as loads for the
+      // load-use stall.
+      OPCODE_AMO: begin
+        ctrl.rd_we    = 1'b1;
+        ctrl.mem_read = 1'b1;
+        ctrl.op2_sel  = OP2_IMM;
+        ctrl.imm      = 32'd0;
+        uses_rs1      = 1'b1;
+        if (funct3 != FUNCT3_AMO_W) ctrl.illegal = 1'b1;
+        case (instruction[31:27])
+          AMO_LR: begin
+            ctrl.lr = 1'b1;
+            if (instruction[24:20] != 5'd0) ctrl.illegal = 1'b1;
+          end
+          AMO_SC: begin
+            ctrl.sc        = 1'b1;
+            ctrl.mem_write = 1'b1;
+            uses_rs2       = 1'b1;
+          end
+          AMO_SWAP, AMO_ADD, AMO_XOR, AMO_AND, AMO_OR,
+          AMO_MIN, AMO_MAX, AMO_MINU, AMO_MAXU: begin
+            ctrl.amo       = 1'b1;
+            ctrl.mem_write = 1'b1;
+            uses_rs2       = 1'b1;
+          end
+          default: ctrl.illegal = 1'b1;
+        endcase
       end
 
       OPCODE_SYSTEM: begin
@@ -176,7 +211,7 @@ module decoder import isa::*; (
             INSTR_ECALL:  ctrl.ecall  = 1'b1;
             INSTR_EBREAK: ctrl.ebreak = 1'b1;
             INSTR_MRET:   ctrl.mret   = 1'b1;
-            INSTR_WFI:    ;                       // no interrupts yet: a no-op
+            INSTR_WFI:    ctrl.wfi    = 1'b1;
             default:      ctrl.illegal = 1'b1;
           endcase
         end else begin
@@ -211,6 +246,11 @@ module decoder import isa::*; (
       ctrl.ebreak    = 1'b0;
       ctrl.mret      = 1'b0;
       ctrl.csr       = 1'b0;
+      ctrl.fence_i   = 1'b0;
+      ctrl.wfi       = 1'b0;
+      ctrl.lr        = 1'b0;
+      ctrl.sc        = 1'b0;
+      ctrl.amo       = 1'b0;
       uses_rs1       = 1'b0;
       uses_rs2       = 1'b0;
     end

@@ -1,7 +1,8 @@
 // Minimal riscv-tests environment for this core: bare machine, no CSRs or
-// traps needed. Tests start at address 0 and report through the `tohost`
-// word, like the official environment: 1 = pass, otherwise
-// (failing test number << 1) | 1. They never use ECALL to finish.
+// traps needed. Tests start at the start of RAM (0x80000000, test/link.ld)
+// and report through the `tohost` word, like the official environment:
+// 1 = pass, otherwise (failing test number << 1) | 1. They never use ECALL
+// to finish.
 #ifndef RISCV_SV_TEST_H
 #define RISCV_SV_TEST_H
 

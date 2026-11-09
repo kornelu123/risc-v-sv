@@ -1,0 +1,6 @@
+`verilator_config
+// The SDRAM and SD card models are behavioural testbench code (blocking
+// assignments, variables initialised at declaration); `make -C ulx3s lint`
+// covers the RTL.
+lint_off -file "ulx3s/tb/models/sdram_model.sv"
+lint_off -file "ulx3s/tb/models/sd_card_model.sv"
